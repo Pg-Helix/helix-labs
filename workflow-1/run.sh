@@ -15,7 +15,10 @@ set -eu
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 COMPOSE_DIR="$SCRIPT_DIR/../../helix-foundry/compose"
 COMPOSE="docker compose -f $COMPOSE_DIR/docker-compose.yml"
-APP_URL="postgres://helix_app:demo-app-only-not-for-prod@localhost/postgres?sslmode=disable"
+
+[ -f "$COMPOSE_DIR/.env" ] || "$COMPOSE_DIR/generate-env.sh"
+. "$COMPOSE_DIR/.env"
+APP_URL="postgres://helix_app:${HELIX_APP_PASSWORD}@localhost/postgres?sslmode=disable"
 
 app_psql() {
     $COMPOSE exec -T postgres psql "$APP_URL" -v ON_ERROR_STOP=1 "$@"
