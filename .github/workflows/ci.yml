@@ -34,7 +34,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: Pg-Helix/helix-cortex
-          ref: 8597633fb894e88b01cba4d0c13aec07d1b6edf5
+          ref: 739d3ec78f9185b85680abf3674025cf48c62607
           path: helix-cortex
       - name: Use the classic (non-sandboxed) buildx driver
         # GH-hosted runners default to the "docker-container" buildx

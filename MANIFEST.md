@@ -18,7 +18,7 @@ repeating the SHA.
 | helix-kernel | feat/k2-registration | `e2528cdf2b74edbe5be76cd5ad7ffb9a88a8ebf8` | [#6](https://github.com/Pg-Helix/helix-kernel/pull/6) |
 | helix-kernel | feat/k3-refresh-publish (stacked on the two rows above) | `5f5895e5d3efd6e623d4366ab871dc7e9d251f91` | [#8](https://github.com/Pg-Helix/helix-kernel/pull/8) |
 | helix-infer | feat/i1-provider-interface | `444d5213ccb97dfb7dd438db689c93b646dd505c` | [#5](https://github.com/Pg-Helix/helix-infer/pull/5) |
-| helix-cortex | feat/c1-worker | `8597633fb894e88b01cba4d0c13aec07d1b6edf5` | [#4](https://github.com/Pg-Helix/helix-cortex/pull/4) |
+| helix-cortex | feat/c1-worker | `739d3ec78f9185b85680abf3674025cf48c62607` | [#4](https://github.com/Pg-Helix/helix-cortex/pull/4) |
 | helix-foundry | feat/phase1-local-stack | `0f7358eca043c177938027eee1ac1316ea6a7dc9` | [#4](https://github.com/Pg-Helix/helix-foundry/pull/4) |
 | helix-labs | feat/workflow1-demo | this repo's own current `HEAD` -- not pinned here, since a commit adding/editing this file cannot name its own final SHA in advance | [#4](https://github.com/Pg-Helix/helix-labs/pull/4) |
 
