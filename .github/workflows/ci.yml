@@ -36,5 +36,17 @@ jobs:
           repository: Pg-Helix/helix-cortex
           ref: 8597633fb894e88b01cba4d0c13aec07d1b6edf5
           path: helix-cortex
+      - name: Use the classic (non-sandboxed) buildx driver
+        # GH-hosted runners default to the "docker-container" buildx
+        # driver, which runs BuildKit in its own container and enforces
+        # filesystem-read entitlements for anything outside a build's
+        # own context -- exactly how helix-foundry's docker-compose.yml
+        # is written (build context in helix-kernel/helix-cortex,
+        # Dockerfile living in helix-foundry's images/ dir). The
+        # classic "docker" driver builds inside the host daemon with no
+        # such sandbox, matching local dev where this already works.
+        run: docker buildx use default
       - name: Run the full workflow-1 acceptance gate
+        env:
+          COMPOSE_BAKE: "false"
         run: cd helix-labs/workflow-1 && sh acceptance.sh
