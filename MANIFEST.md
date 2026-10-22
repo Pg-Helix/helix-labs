@@ -20,7 +20,7 @@ repeating the SHA.
 | helix-infer | feat/i1-provider-interface | `444d5213ccb97dfb7dd438db689c93b646dd505c` | [#5](https://github.com/Pg-Helix/helix-infer/pull/5) |
 | helix-cortex | feat/c1-worker | `8597633fb894e88b01cba4d0c13aec07d1b6edf5` | [#4](https://github.com/Pg-Helix/helix-cortex/pull/4) |
 | helix-foundry | feat/phase1-local-stack | `0f7358eca043c177938027eee1ac1316ea6a7dc9` | [#4](https://github.com/Pg-Helix/helix-foundry/pull/4) |
-| helix-labs | feat/workflow1-demo | `2cde4ba810f33b4c40b404d2ffa72e50f05a1c1d` (this repo) | [#4](https://github.com/Pg-Helix/helix-labs/pull/4) |
+| helix-labs | feat/workflow1-demo | this repo's own current `HEAD` -- not pinned here, since a commit adding/editing this file cannot name its own final SHA in advance | [#4](https://github.com/Pg-Helix/helix-labs/pull/4) |
 
 `prepare-checkouts.sh` only clones/pins `helix-foundry`, `helix-kernel` and `helix-cortex`
 next to this repo -- the three repos `workflow-1/`'s scripts actually check out or build
