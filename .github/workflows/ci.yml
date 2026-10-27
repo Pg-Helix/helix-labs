@@ -1,0 +1,52 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  # The shared cross-repo acceptance gate for workflow 1 -- owned here,
+  # not duplicated into helix-foundry/helix-kernel/helix-cortex's own CI.
+  # Neither helix-foundry nor this repo had any CI at all before this;
+  # a local "it passed on my machine" run is not evidence by itself.
+  # Builds the real Foundry Compose stack (PostgreSQL + the kernel
+  # extension + the cortex worker) from the exact sibling commits
+  # MANIFEST.md pins and runs the full 5-scenario acceptance.sh against
+  # it -- not a smoke test, and nothing here is allowed to skip.
+  workflow1-acceptance:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: helix-labs
+      - name: Check out pinned sibling repos (see helix-labs/MANIFEST.md)
+        uses: actions/checkout@v4
+        with:
+          repository: Pg-Helix/helix-foundry
+          ref: 0f7358eca043c177938027eee1ac1316ea6a7dc9
+          path: helix-foundry
+      - uses: actions/checkout@v4
+        with:
+          repository: Pg-Helix/helix-kernel
+          ref: 5f5895e5d3efd6e623d4366ab871dc7e9d251f91
+          path: helix-kernel
+      - uses: actions/checkout@v4
+        with:
+          repository: Pg-Helix/helix-cortex
+          ref: 739d3ec78f9185b85680abf3674025cf48c62607
+          path: helix-cortex
+      - name: Use the classic (non-sandboxed) buildx driver
+        # GH-hosted runners default to the "docker-container" buildx
+        # driver, which runs BuildKit in its own container and enforces
+        # filesystem-read entitlements for anything outside a build's
+        # own context -- exactly how helix-foundry's docker-compose.yml
+        # is written (build context in helix-kernel/helix-cortex,
+        # Dockerfile living in helix-foundry's images/ dir). The
+        # classic "docker" driver builds inside the host daemon with no
+        # such sandbox, matching local dev where this already works.
+        run: docker buildx use default
+      - name: Run the full workflow-1 acceptance gate
+        env:
+          COMPOSE_BAKE: "false"
+        run: cd helix-labs/workflow-1 && sh acceptance.sh
