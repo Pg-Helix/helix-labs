@@ -10,9 +10,20 @@ MANIFEST="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)/MANIFEST.md"
 PARENT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 
 # Parses MANIFEST.md's "| repo | ref | commit |" table rows.
-grep -E '^\| helix-' "$MANIFEST" | while IFS='|' read -r _ repo ref commit _; do
+# Restricted to exactly the three repos this script actually checks out
+# (see the note below the table in MANIFEST.md) -- the unrestricted
+# '^\| helix-' pattern used here previously also matched the
+# helix-atlas/helix-protocol/helix-infer/helix-labs rows, the last of
+# which resolves to this very repo's own directory (git fetch/checkout
+# against a commit column that isn't even a real SHA for that row) --
+# a real bug, caught by actually running this end to end rather than
+# only reading it.
+grep -E '^\| (helix-foundry|helix-kernel|helix-cortex) ' "$MANIFEST" | while IFS='|' read -r _ repo ref commit _; do
     repo=$(echo "$repo" | xargs)
-    commit=$(echo "$commit" | xargs)
+    # Strip markdown backticks around the SHA in the table (`abc123`) --
+    # left in place, git fetch/checkout receive a literal backtick-
+    # wrapped string and fail with "couldn't find remote ref `abc123`".
+    commit=$(echo "$commit" | xargs | tr -d '`')
     dir="$PARENT/$repo"
     if [ ! -d "$dir/.git" ]; then
         echo "prepare-checkouts.sh: cloning $repo"
