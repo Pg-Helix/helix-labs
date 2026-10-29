@@ -86,7 +86,7 @@ else
 fi
 echo "scenario 2: PASS"
 
-# --- Scenario 3: freshness (update, delete+reinsert) ---
+# --- Scenario 3: freshness (update, generation fence, delete+reinsert) ---
 echo "--- scenario 3: freshness ---"
 code=$(api POST "/collections/$COL1/documents" "$ALICE_TOKEN" '{"tenant":"acme","name":"doc.md","content_type":"text/markdown","content":"UPDATED: employees now accrue twenty days of paid leave per year."}')
 expect_code "update document (changed content)" 201 "$code"
@@ -98,6 +98,26 @@ case "$SNIPPET" in
   *"fifteen days"*) echo "FAIL: search still returned the OLD content after an update"; fail=1 ;;
   *) echo "FAIL: unexpected snippet: $SNIPPET"; fail=1 ;;
 esac
+
+# The generation fence (ADR-0006 decision 3, reused unmodified here): this
+# MUST happen via a plain update on DOC1 itself, never a delete -- a
+# delete+reinsert gets a fresh document_id (see below), so its chunk keys
+# have never existed before and there is nothing tombstoned to reactivate.
+# Reverting DOC1 straight back to its original digest instead reactivates
+# the exact (DOC1, digest_of_fifteen_days, ...) key that the update above
+# just tombstoned.
+code=$(api POST "/collections/$COL1/documents" "$ALICE_TOKEN" '{"tenant":"acme","name":"doc.md","content_type":"text/markdown","content":"Employees accrue fifteen days of paid leave per year."}')
+expect_code "revert document back to its original (now-tombstoned) content" 201 "$code"
+wf2_wait_document_status "$COL1" "$DOC1" "$ALICE_TOKEN" ready 30
+REVERT_GENERATION=$(pg_admin -c "SELECT generation FROM helix_ai.derived_value WHERE (source_key ->> 'document_id') = '$DOC1' ORDER BY generation DESC LIMIT 1" | tr -d ' ')
+if [ "$REVERT_GENERATION" -gt 1 ]; then
+    echo "ok: reactivating a tombstoned key (same document, reverted digest) bumped generation to $REVERT_GENERATION"
+else
+    echo "FAIL: expected generation > 1 after reactivating a tombstoned key, got $REVERT_GENERATION"
+    fail=1
+fi
+
+code=$(api POST /search "$ALICE_TOKEN" "{\"tenant\":\"acme\",\"collection_id\":\"$COL1\",\"query\":\"paid leave\"}")
 PRE_DELETE_CHUNK=$(json_field results.0.chunk_id)
 
 code=$(api DELETE "/collections/$COL1/documents/$DOC1" "$ALICE_TOKEN")
@@ -113,11 +133,10 @@ fi
 
 # A whole-document delete+reinsert generates a fresh document id (see
 # ADR-0007 decision 3's mapping notes) -- the chunk primary key is never
-# actually reused across this path, so the real invariant to check is
-# that the PRE-delete citation can never be resurrected, not that some
-# generation counter incremented for a key that no longer exists.
+# actually reused across this path, so the invariant to check here is
+# that the PRE-delete citation can never be resurrected.
 code=$(api POST "/collections/$COL1/documents" "$ALICE_TOKEN" '{"tenant":"acme","name":"doc.md","content_type":"text/markdown","content":"UPDATED: employees now accrue twenty days of paid leave per year."}')
-expect_code "reinsert identical bytes after delete" 201 "$code"
+expect_code "reinsert after delete" 201 "$code"
 DOC1_REINSERTED=$(json_field id)
 wf2_wait_document_status "$COL1" "$DOC1_REINSERTED" "$ALICE_TOKEN" ready 30
 if [ "$DOC1_REINSERTED" = "$DOC1" ]; then
@@ -128,23 +147,8 @@ else
 fi
 code=$(api GET "/evidence/$PRE_DELETE_CHUNK?tenant=acme" "$ALICE_TOKEN")
 expect_code "the pre-delete citation cannot be resurrected by the reinsert" 404 "$code"
-
-# The generation fence itself (ADR-0006 decision 3, reused unmodified
-# here): reverting to a digest that was already tombstoned AT THE SAME
-# document/key must bump generation on reactivation, which is the case
-# a whole-document delete+reinsert (above) doesn't exercise since it
-# never reuses a key.
-code=$(api POST "/collections/$COL1/documents" "$ALICE_TOKEN" '{"tenant":"acme","name":"doc.md","content_type":"text/markdown","content":"Employees accrue fifteen days of paid leave per year."}')
-expect_code "revert this document back to its original (now-tombstoned) content" 201 "$code"
-wf2_wait_document_status "$COL1" "$DOC1_REINSERTED" "$ALICE_TOKEN" ready 30
-REVERT_GENERATION=$(pg_admin -c "SELECT generation FROM helix_ai.derived_value WHERE (source_key ->> 'document_id') = '$DOC1_REINSERTED' ORDER BY generation DESC LIMIT 1" | tr -d ' ')
-if [ "$REVERT_GENERATION" -gt 1 ]; then
-    echo "ok: reactivating a tombstoned key (same document, reverted digest) bumped generation to $REVERT_GENERATION"
-else
-    echo "FAIL: expected generation > 1 after reactivating a tombstoned key, got $REVERT_GENERATION"
-    fail=1
-fi
-echo "scenario 3: PASS (chunker/model-version-change regeneration is validated at the design/unit level -- ADR-0007 decision 3 -- not black-box here; see the completion report)"
+echo "scenario 3: PASS"
+echo "note: chunker/model-version-change regeneration (a separate ADR-0007 decision 3 case) is validated at the design/unit level, not black-box here -- see the completion report"
 
 # --- Scenario 4: hybrid ranking (mechanics, not semantic quality) ---
 echo "--- scenario 4: hybrid ranking ---"
