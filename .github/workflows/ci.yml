@@ -14,6 +14,13 @@ jobs:
   # extension + the cortex worker) from the exact sibling commits
   # MANIFEST.md pins and runs the full 5-scenario acceptance.sh against
   # it -- not a smoke test, and nothing here is allowed to skip.
+  #
+  # Pinned to the SAME helix-foundry/helix-cortex commits as
+  # workflow2-acceptance below (see MANIFEST.md): both workflows must be
+  # proven against one real stack, not two different ones -- a green
+  # workflow-1 check against an older manifest would not show that the
+  # Workflow 2 changes (pgvector, new roles/services, the chunk-text
+  # input extractor) left workflow 1 intact.
   workflow1-acceptance:
     runs-on: ubuntu-latest
     steps:
@@ -24,7 +31,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: Pg-Helix/helix-foundry
-          ref: 0f7358eca043c177938027eee1ac1316ea6a7dc9
+          ref: 85637c8068427329ec32622b1954b852a48bbd72
           path: helix-foundry
       - uses: actions/checkout@v4
         with:
@@ -34,7 +41,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: Pg-Helix/helix-cortex
-          ref: 739d3ec78f9185b85680abf3674025cf48c62607
+          ref: ec6df64af9ce41009e57e046d28903012b45f875
           path: helix-cortex
       - name: Use the classic (non-sandboxed) buildx driver
         # GH-hosted runners default to the "docker-container" buildx
@@ -50,3 +57,37 @@ jobs:
         env:
           COMPOSE_BAKE: "false"
         run: cd helix-labs/workflow-1 && sh acceptance.sh
+
+  # The Workflow 2 acceptance gate (ADR-0007): authorized ingestion,
+  # hybrid retrieval, extractive answers with citations, and revocable
+  # access, against the real cortex-api/chunk-worker binaries and a real
+  # PostgreSQL+pgvector. Same sibling commits as workflow1-acceptance
+  # above (see MANIFEST.md) -- one real stack, both gates.
+  workflow2-acceptance:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: helix-labs
+      - name: Check out pinned sibling repos (see helix-labs/MANIFEST.md)
+        uses: actions/checkout@v4
+        with:
+          repository: Pg-Helix/helix-foundry
+          ref: 85637c8068427329ec32622b1954b852a48bbd72
+          path: helix-foundry
+      - uses: actions/checkout@v4
+        with:
+          repository: Pg-Helix/helix-kernel
+          ref: 5f5895e5d3efd6e623d4366ab871dc7e9d251f91
+          path: helix-kernel
+      - uses: actions/checkout@v4
+        with:
+          repository: Pg-Helix/helix-cortex
+          ref: ec6df64af9ce41009e57e046d28903012b45f875
+          path: helix-cortex
+      - name: Use the classic (non-sandboxed) buildx driver
+        run: docker buildx use default
+      - name: Run the full workflow-2 acceptance gate
+        env:
+          COMPOSE_BAKE: "false"
+        run: cd helix-labs/workflow-2 && sh acceptance.sh
