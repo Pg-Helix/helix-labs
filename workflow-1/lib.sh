@@ -8,6 +8,11 @@ COMPOSE_DIR="$WF1_SCRIPT_DIR/../../helix-foundry/compose"
 
 [ -f "$COMPOSE_DIR/.env" ] || "$COMPOSE_DIR/generate-env.sh"
 . "$COMPOSE_DIR/.env"
+# docker-compose.yml now also defines cortex-api (Workflow 2, ADR-0007),
+# which bind-mounts this file -- wf1_up's unscoped `compose up` brings up
+# every service in the file, so this must exist even though workflow 1
+# itself never talks to cortex-api.
+[ -f "$COMPOSE_DIR/auth-fixture.json" ] || "$COMPOSE_DIR/generate-auth-fixture.sh"
 
 # Each acceptance run gets its own Compose project name, so cleanup only
 # ever touches containers/networks/volumes THIS run created -- never an
