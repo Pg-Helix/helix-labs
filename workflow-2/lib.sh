@@ -50,8 +50,11 @@ wf2_load_tokens() {
 api() {
     method=$1 path=$2 token=$3 body=${4:-}
     if [ -n "$body" ]; then
-        curl -s -o /tmp/wf2_api_body.json -w '%{http_code}' -X "$method" "$API$path" \
-            -H "Authorization: Bearer $token" -H "Content-Type: application/json" -d "$body"
+        # Body goes over stdin (-d @-), never as a "-d VALUE" argv string:
+        # a large body (e.g. scenario 10's oversized-document test) can
+        # exceed the OS's exec argument-list limit if passed as an argument.
+        printf '%s' "$body" | curl -s -o /tmp/wf2_api_body.json -w '%{http_code}' -X "$method" "$API$path" \
+            -H "Authorization: Bearer $token" -H "Content-Type: application/json" -d @-
     else
         curl -s -o /tmp/wf2_api_body.json -w '%{http_code}' -X "$method" "$API$path" \
             -H "Authorization: Bearer $token"

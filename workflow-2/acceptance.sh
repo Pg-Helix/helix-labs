@@ -245,6 +245,11 @@ echo "scenario 7: PASS"
 
 # --- Scenario 8: in-flight revocation (deterministic barrier) ---
 echo "--- scenario 8: in-flight revocation ---"
+# Snapshot the global fail counter: scenario 3's known/accepted design-level
+# gap already left fail=1 by this point, so the PASS/FAIL label below must
+# compare against this snapshot, not against fail itself, or scenario 8
+# would always print FAIL regardless of its own outcome.
+s8_fail_before=$fail
 code=$(api POST "/collections/$COL1/permissions" "$ALICE_TOKEN" '{"principal":"bob","role":"reader"}')
 expect_code "re-grant bob for this scenario" 201 "$code"
 BARRIER_TOKEN="wf2-barrier-$$"
@@ -300,7 +305,7 @@ else
         ;;
     esac
 fi
-if [ "$fail" -eq 0 ]; then
+if [ "$fail" -eq "$s8_fail_before" ]; then
     echo "scenario 8: PASS"
 else
     echo "scenario 8: FAIL"
