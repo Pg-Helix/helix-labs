@@ -1,0 +1,1 @@
+Executive base salaries are reviewed annually by the compensation committee. Annual bonus targets for vice presidents and above range from twenty to forty percent of base salary. Equity grants vest over four years with a one year cliff.

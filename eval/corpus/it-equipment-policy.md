@@ -1,0 +1,1 @@
+Laptops are replaced every three years as part of the standard refresh cycle. Employees may request a standing desk or an ergonomic chair through the facilities portal. Lost or damaged equipment outside normal wear must be reported to IT immediately.
