@@ -1,0 +1,1 @@
+Employees may take up to ten sick days per year without providing a doctor's note. Extended medical leave beyond ten days requires written approval from Human Resources and supporting documentation from a physician.

@@ -1,0 +1,1 @@
+Parking permits are issued on a first come first served basis each quarter. Visitor parking is available in Lot C without a permit. Employees who park in a reserved spot without authorization may have their vehicle towed at their own expense.

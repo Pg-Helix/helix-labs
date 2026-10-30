@@ -1,0 +1,1 @@
+Employees must disclose any conflicts of interest to their manager as soon as they arise. Gifts from vendors or clients valued over one hundred dollars must be reported to compliance. Retaliation against an employee who reports a concern in good faith is strictly prohibited.

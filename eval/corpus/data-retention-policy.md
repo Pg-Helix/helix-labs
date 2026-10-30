@@ -1,0 +1,1 @@
+Customer data is retained for seven years after account closure to satisfy regulatory requirements. Internal application logs are retained for ninety days before automatic deletion. Backup snapshots older than one year are purged quarterly.
