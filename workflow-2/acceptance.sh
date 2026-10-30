@@ -53,7 +53,7 @@ case "$EVTEXT" in
 esac
 echo "scenario 1: PASS"
 
-# --- Scenario 2: idempotency (sequential and concurrent duplicates) ---
+# --- Scenario 2: idempotency and concurrent ingestion races ---
 echo "--- scenario 2: idempotency ---"
 BEFORE_CREATED=$(pg_admin -c "SELECT created_at FROM cortex.chunk WHERE document_id = '$DOC1' ORDER BY chunk_index" | tr -d ' ')
 code=$(api POST "/collections/$COL1/documents" "$ALICE_TOKEN" '{"tenant":"acme","name":"doc.md","content_type":"text/markdown","content":"Employees accrue fifteen days of paid leave per year."}')
@@ -71,17 +71,110 @@ else
     echo "ok: idempotent re-ingest left the chunk row untouched (no new chunk/job)"
 fi
 
-# Concurrent duplicate submission: two parallel identical ingests.
-api POST "/collections/$COL1/documents" "$ALICE_TOKEN" '{"tenant":"acme","name":"doc.md","content_type":"text/markdown","content":"Employees accrue fifteen days of paid leave per year."}' > /tmp/wf2_concurrent_a.code &
+# Concurrent duplicate submission: two parallel identical ingests of the
+# SAME already-existing document. Isolated response files (not the
+# shared default) so each background call's own status/body can be
+# trusted afterward -- two calls sharing one file would race each
+# other's writes. Both must succeed (resolveDocumentForIngest's FOR
+# UPDATE serializes them against each other rather than corrupting
+# state), and exactly one chunk row/active version must result.
+api POST "/collections/$COL1/documents" "$ALICE_TOKEN" '{"tenant":"acme","name":"doc.md","content_type":"text/markdown","content":"Employees accrue fifteen days of paid leave per year."}' /tmp/wf2_dup_a.json > /tmp/wf2_dup_a.code &
 PID_A=$!
-api POST "/collections/$COL1/documents" "$ALICE_TOKEN" '{"tenant":"acme","name":"doc.md","content_type":"text/markdown","content":"Employees accrue fifteen days of paid leave per year."}' > /tmp/wf2_concurrent_b.code &
+api POST "/collections/$COL1/documents" "$ALICE_TOKEN" '{"tenant":"acme","name":"doc.md","content_type":"text/markdown","content":"Employees accrue fifteen days of paid leave per year."}' /tmp/wf2_dup_b.json > /tmp/wf2_dup_b.code &
 PID_B=$!
-wait "$PID_A"; wait "$PID_B"
-CHUNK_COUNT=$(pg_admin -c "SELECT count(*) FROM cortex.chunk WHERE document_id = '$DOC1'")
-if [ "$(echo "$CHUNK_COUNT" | tr -d ' ')" = "1" ]; then
+wait "$PID_A"; CODE_A=$(cat /tmp/wf2_dup_a.code)
+wait "$PID_B"; CODE_B=$(cat /tmp/wf2_dup_b.code)
+if [ "$CODE_A" = "201" ] && [ "$CODE_B" = "201" ]; then
+    echo "ok: both concurrent duplicate-content requests succeeded (http $CODE_A, http $CODE_B)"
+else
+    echo "FAIL: concurrent duplicate requests: expected 201/201, got $CODE_A/$CODE_B"
+    cat /tmp/wf2_dup_a.json; cat /tmp/wf2_dup_b.json
+    fail=1
+fi
+CHUNK_COUNT=$(pg_admin -c "SELECT count(*) FROM cortex.chunk WHERE document_id = '$DOC1'" | tr -d ' ')
+if [ "$CHUNK_COUNT" = "1" ]; then
     echo "ok: concurrent duplicate ingestion still leaves exactly 1 chunk row"
 else
     echo "FAIL: expected exactly 1 chunk row after concurrent duplicates, got $CHUNK_COUNT"
+    fail=1
+fi
+
+# Concurrent FIRST creation/registration: two parallel ingests of a
+# document name that has never existed before. Exactly one coherent
+# document/active-version must result -- not two documents, not a
+# unique_violation surfaced as a 500.
+api POST "/collections/$COL1/documents" "$ALICE_TOKEN" '{"tenant":"acme","name":"race-first-create.md","content_type":"text/markdown","content":"first creation race content."}' /tmp/wf2_race_a.json > /tmp/wf2_race_a.code &
+PID_A=$!
+api POST "/collections/$COL1/documents" "$ALICE_TOKEN" '{"tenant":"acme","name":"race-first-create.md","content_type":"text/markdown","content":"first creation race content."}' /tmp/wf2_race_b.json > /tmp/wf2_race_b.code &
+PID_B=$!
+wait "$PID_A"; RACE_CODE_A=$(cat /tmp/wf2_race_a.code)
+wait "$PID_B"; RACE_CODE_B=$(cat /tmp/wf2_race_b.code)
+if [ "$RACE_CODE_A" = "201" ] && [ "$RACE_CODE_B" = "201" ]; then
+    echo "ok: both concurrent first-creation requests succeeded, not a raw conflict error (http $RACE_CODE_A, http $RACE_CODE_B)"
+else
+    echo "FAIL: concurrent first creation: expected 201/201, got $RACE_CODE_A/$RACE_CODE_B"
+    cat /tmp/wf2_race_a.json; cat /tmp/wf2_race_b.json
+    fail=1
+fi
+RACE_DOC_A=$(json_field id /tmp/wf2_race_a.json)
+RACE_DOC_B=$(json_field id /tmp/wf2_race_b.json)
+if [ "$RACE_DOC_A" = "$RACE_DOC_B" ]; then
+    echo "ok: both requests resolved to the SAME document id ($RACE_DOC_A)"
+else
+    echo "FAIL: concurrent first creation produced two different document ids: $RACE_DOC_A vs $RACE_DOC_B"
+    fail=1
+fi
+DOC_COUNT=$(pg_admin -c "SELECT count(*) FROM cortex.document WHERE collection_id = '$COL1' AND name = 'race-first-create.md'" | tr -d ' ')
+if [ "$DOC_COUNT" = "1" ]; then
+    echo "ok: exactly one document row exists after the first-creation race"
+else
+    echo "FAIL: expected exactly 1 document row, got $DOC_COUNT"
+    fail=1
+fi
+# Clean up: this document's only purpose was proving the race above is
+# safe. Left alive, it would be a second, unrelated-but-still-active
+# document in COL1 -- breaking scenario 3's later "search finds nothing
+# after deleting doc.md" assumption, which only holds if doc.md is
+# COL1's only ready content at that point.
+code=$(api DELETE "/collections/$COL1/documents/$RACE_DOC_A" "$ALICE_TOKEN")
+expect_code "clean up the first-creation race's test document" 204 "$code"
+
+# Competing updates with DIFFERENT content to the same existing
+# document: exactly one must become the final active version (whichever
+# commits last), with no orphaned chunk left searchable under the OTHER
+# content's digest once it's no longer active.
+api POST "/collections/$COL1/documents" "$ALICE_TOKEN" '{"tenant":"acme","name":"doc.md","content_type":"text/markdown","content":"CONTENT A: thirty days of sick leave per year."}' /tmp/wf2_compete_a.json > /tmp/wf2_compete_a.code &
+PID_A=$!
+api POST "/collections/$COL1/documents" "$ALICE_TOKEN" '{"tenant":"acme","name":"doc.md","content_type":"text/markdown","content":"CONTENT B: forty days of sick leave per year."}' /tmp/wf2_compete_b.json > /tmp/wf2_compete_b.code &
+PID_B=$!
+wait "$PID_A"; COMPETE_CODE_A=$(cat /tmp/wf2_compete_a.code)
+wait "$PID_B"; COMPETE_CODE_B=$(cat /tmp/wf2_compete_b.code)
+if [ "$COMPETE_CODE_A" = "201" ] && [ "$COMPETE_CODE_B" = "201" ]; then
+    echo "ok: both competing-content updates succeeded (http $COMPETE_CODE_A, http $COMPETE_CODE_B)"
+else
+    echo "FAIL: competing updates: expected 201/201, got $COMPETE_CODE_A/$COMPETE_CODE_B"
+    cat /tmp/wf2_compete_a.json; cat /tmp/wf2_compete_b.json
+    fail=1
+fi
+wf2_wait_document_status "$COL1" "$DOC1" "$ALICE_TOKEN" ready 30
+ACTIVE_VERSIONS=$(pg_admin -c "SELECT count(*) FROM cortex.document_version WHERE document_id = '$DOC1' AND superseded_at IS NULL" | tr -d ' ')
+if [ "$ACTIVE_VERSIONS" = "1" ]; then
+    echo "ok: exactly one coherent active version after competing updates"
+else
+    echo "FAIL: expected exactly 1 active (non-superseded) version, got $ACTIVE_VERSIONS"
+    fail=1
+fi
+code=$(api POST /search "$ALICE_TOKEN" "{\"tenant\":\"acme\",\"collection_id\":\"$COL1\",\"query\":\"sick leave\"}")
+SICK_LEAVE_RESULTS=$(json_field results)
+MATCHING=$(python3 -c "
+import json
+d = json.load(open('/tmp/wf2_api_body.json'))
+print(sum(1 for r in d.get('results', []) if r.get('document_id') == '$DOC1'))
+")
+if [ "$MATCHING" -le 1 ]; then
+    echo "ok: no more than one orphaned/duplicate result for this document after the race ($MATCHING)"
+else
+    echo "FAIL: found $MATCHING results for document $DOC1 after competing updates -- an orphaned chunk is still searchable"
     fail=1
 fi
 echo "scenario 2: PASS"
