@@ -31,17 +31,17 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: Pg-Helix/helix-foundry
-          ref: 85637c8068427329ec32622b1954b852a48bbd72
+          ref: 762407f8ac4b26c4c22fde4238cc1f55e62974ea
           path: helix-foundry
       - uses: actions/checkout@v4
         with:
           repository: Pg-Helix/helix-kernel
-          ref: 5f5895e5d3efd6e623d4366ab871dc7e9d251f91
+          ref: 0f5bec3ee5f5f9506d0be87c1bec856836d10080
           path: helix-kernel
       - uses: actions/checkout@v4
         with:
           repository: Pg-Helix/helix-cortex
-          ref: ec6df64af9ce41009e57e046d28903012b45f875
+          ref: 74213448fcd5d8521263098b6bd65db7885041ef
           path: helix-cortex
       - name: Use the classic (non-sandboxed) buildx driver
         # GH-hosted runners default to the "docker-container" buildx
@@ -62,7 +62,9 @@ jobs:
   # hybrid retrieval, extractive answers with citations, and revocable
   # access, against the real cortex-api/chunk-worker binaries and a real
   # PostgreSQL+pgvector. Same sibling commits as workflow1-acceptance
-  # above (see MANIFEST.md) -- one real stack, both gates.
+  # above (see MANIFEST.md) -- one real stack, both gates. Mock
+  # embeddings throughout (the default profile) -- the real-model-eval
+  # job below is what exercises the real embedding provider.
   workflow2-acceptance:
     runs-on: ubuntu-latest
     steps:
@@ -73,17 +75,17 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: Pg-Helix/helix-foundry
-          ref: 85637c8068427329ec32622b1954b852a48bbd72
+          ref: 762407f8ac4b26c4c22fde4238cc1f55e62974ea
           path: helix-foundry
       - uses: actions/checkout@v4
         with:
           repository: Pg-Helix/helix-kernel
-          ref: 5f5895e5d3efd6e623d4366ab871dc7e9d251f91
+          ref: 0f5bec3ee5f5f9506d0be87c1bec856836d10080
           path: helix-kernel
       - uses: actions/checkout@v4
         with:
           repository: Pg-Helix/helix-cortex
-          ref: ec6df64af9ce41009e57e046d28903012b45f875
+          ref: 74213448fcd5d8521263098b6bd65db7885041ef
           path: helix-cortex
       - name: Use the classic (non-sandboxed) buildx driver
         run: docker buildx use default
@@ -91,3 +93,81 @@ jobs:
         env:
           COMPOSE_BAKE: "false"
         run: cd helix-labs/workflow-2 && sh acceptance.sh
+
+  # Embedding-binding version-change properties (backfill idempotency,
+  # binding isolation, dimension-change triggering, a cutover's clean
+  # "not yet ready" gap) -- mock bindings throughout (deterministic,
+  # fast), same sibling commits as the gates above.
+  version-change:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: helix-labs
+      - name: Check out pinned sibling repos (see helix-labs/MANIFEST.md)
+        uses: actions/checkout@v4
+        with:
+          repository: Pg-Helix/helix-foundry
+          ref: 762407f8ac4b26c4c22fde4238cc1f55e62974ea
+          path: helix-foundry
+      - uses: actions/checkout@v4
+        with:
+          repository: Pg-Helix/helix-kernel
+          ref: 0f5bec3ee5f5f9506d0be87c1bec856836d10080
+          path: helix-kernel
+      - uses: actions/checkout@v4
+        with:
+          repository: Pg-Helix/helix-cortex
+          ref: 74213448fcd5d8521263098b6bd65db7885041ef
+          path: helix-cortex
+      - name: Use the classic (non-sandboxed) buildx driver
+        run: docker buildx use default
+      - name: Run the embedding-binding version-change gate
+        env:
+          COMPOSE_BAKE: "false"
+        run: cd helix-labs/workflow-2 && sh version-change.sh
+
+  # The real, local CPU embedding profile's evaluation (this milestone):
+  # downloads and runs a real ~274MB model via Ollama -- kept in its own
+  # job, separate from the fast mock gates above, but REQUIRED: never
+  # allowed to skip. A missing/failed download or a crashed run fails
+  # this job; score.py additionally fails the job on any unauthorized
+  # disclosure or a missed pre-registered acceptance target
+  # (helix-labs/eval/PROTOCOL.md) -- no threshold here is adjusted after
+  # the fact to manufacture a pass.
+  real-model-eval:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: helix-labs
+      - name: Check out pinned sibling repos (see helix-labs/MANIFEST.md)
+        uses: actions/checkout@v4
+        with:
+          repository: Pg-Helix/helix-foundry
+          ref: 762407f8ac4b26c4c22fde4238cc1f55e62974ea
+          path: helix-foundry
+      - uses: actions/checkout@v4
+        with:
+          repository: Pg-Helix/helix-kernel
+          ref: 0f5bec3ee5f5f9506d0be87c1bec856836d10080
+          path: helix-kernel
+      - uses: actions/checkout@v4
+        with:
+          repository: Pg-Helix/helix-cortex
+          ref: 74213448fcd5d8521263098b6bd65db7885041ef
+          path: helix-cortex
+      - name: Use the classic (non-sandboxed) buildx driver
+        run: docker buildx use default
+      - name: Run the mock pass (plumbing baseline)
+        run: cd helix-labs/eval && sh run-eval.sh mock
+      - name: Run the real pass (nomic-embed-text via Ollama)
+        run: cd helix-labs/eval && sh run-eval.sh real
+      - name: Score both passes against PROTOCOL.md's acceptance targets
+        run: cd helix-labs/eval && python3 score.py
+      - name: Upload the full report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: eval-report
+          path: helix-labs/eval/report.json
