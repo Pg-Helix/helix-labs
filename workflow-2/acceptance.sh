@@ -16,14 +16,20 @@ trap wf2_cleanup EXIT INT TERM
 wf2_up
 
 fail=0
+s_before=0
+# scenario_result N: PASS only if no assertion failed since the last label.
+scenario_result() {
+    if [ "$fail" -eq "$s_before" ]; then echo "scenario $1: PASS"; else echo "scenario $1: FAIL ($((fail - s_before)) assertion(s))"; fi
+    s_before=$fail
+}
 expect_code() {
     label=$1 want=$2 got=$3
     if [ "$got" = "$want" ]; then
         echo "ok: $label (http $got)"
     else
         echo "FAIL: $label (want http $want, got $got)"
-        cat /tmp/wf2_api_body.json
-        fail=1
+        cat $WF2_BODY
+        fail=$((fail + 1))
     fi
 }
 
@@ -49,9 +55,9 @@ expect_code "evidence lookup" 200 "$code"
 EVTEXT=$(json_field text)
 case "$EVTEXT" in
   *"fifteen days"*) echo "ok: evidence text is correct" ;;
-  *) echo "FAIL: evidence text wrong: $EVTEXT"; fail=1 ;;
+  *) echo "FAIL: evidence text wrong: $EVTEXT"; fail=$((fail + 1)) ;;
 esac
-echo "scenario 1: PASS"
+scenario_result 1
 
 # --- Scenario 2: idempotency and concurrent ingestion races ---
 echo "--- scenario 2: idempotency ---"
@@ -61,12 +67,12 @@ expect_code "re-ingest identical bytes" 201 "$code"
 DOC1_AGAIN=$(json_field id)
 if [ "$DOC1_AGAIN" != "$DOC1" ]; then
     echo "FAIL: idempotent re-ingest returned a different document id"
-    fail=1
+    fail=$((fail + 1))
 fi
 AFTER_CREATED=$(pg_admin -c "SELECT created_at FROM cortex.chunk WHERE document_id = '$DOC1' ORDER BY chunk_index" | tr -d ' ')
 if [ "$BEFORE_CREATED" != "$AFTER_CREATED" ]; then
     echo "FAIL: idempotent re-ingest changed the chunk row (created_at differs) -- a new chunk/job was created"
-    fail=1
+    fail=$((fail + 1))
 else
     echo "ok: idempotent re-ingest left the chunk row untouched (no new chunk/job)"
 fi
@@ -78,58 +84,58 @@ fi
 # other's writes. Both must succeed (resolveDocumentForIngest's FOR
 # UPDATE serializes them against each other rather than corrupting
 # state), and exactly one chunk row/active version must result.
-api POST "/collections/$COL1/documents" "$ALICE_TOKEN" '{"tenant":"acme","name":"doc.md","content_type":"text/markdown","content":"Employees accrue fifteen days of paid leave per year."}' /tmp/wf2_dup_a.json > /tmp/wf2_dup_a.code &
+api POST "/collections/$COL1/documents" "$ALICE_TOKEN" '{"tenant":"acme","name":"doc.md","content_type":"text/markdown","content":"Employees accrue fifteen days of paid leave per year."}' $WF2_TMP/dup_a.json > $WF2_TMP/dup_a.code &
 PID_A=$!
-api POST "/collections/$COL1/documents" "$ALICE_TOKEN" '{"tenant":"acme","name":"doc.md","content_type":"text/markdown","content":"Employees accrue fifteen days of paid leave per year."}' /tmp/wf2_dup_b.json > /tmp/wf2_dup_b.code &
+api POST "/collections/$COL1/documents" "$ALICE_TOKEN" '{"tenant":"acme","name":"doc.md","content_type":"text/markdown","content":"Employees accrue fifteen days of paid leave per year."}' $WF2_TMP/dup_b.json > $WF2_TMP/dup_b.code &
 PID_B=$!
-wait "$PID_A"; CODE_A=$(cat /tmp/wf2_dup_a.code)
-wait "$PID_B"; CODE_B=$(cat /tmp/wf2_dup_b.code)
+wait "$PID_A" || true; CODE_A=$(cat $WF2_TMP/dup_a.code 2>/dev/null || true)
+wait "$PID_B" || true; CODE_B=$(cat $WF2_TMP/dup_b.code 2>/dev/null || true)
 if [ "$CODE_A" = "201" ] && [ "$CODE_B" = "201" ]; then
     echo "ok: both concurrent duplicate-content requests succeeded (http $CODE_A, http $CODE_B)"
 else
     echo "FAIL: concurrent duplicate requests: expected 201/201, got $CODE_A/$CODE_B"
-    cat /tmp/wf2_dup_a.json; cat /tmp/wf2_dup_b.json
-    fail=1
+    cat $WF2_TMP/dup_a.json; cat $WF2_TMP/dup_b.json
+    fail=$((fail + 1))
 fi
 CHUNK_COUNT=$(pg_admin -c "SELECT count(*) FROM cortex.chunk WHERE document_id = '$DOC1'" | tr -d ' ')
 if [ "$CHUNK_COUNT" = "1" ]; then
     echo "ok: concurrent duplicate ingestion still leaves exactly 1 chunk row"
 else
     echo "FAIL: expected exactly 1 chunk row after concurrent duplicates, got $CHUNK_COUNT"
-    fail=1
+    fail=$((fail + 1))
 fi
 
 # Concurrent FIRST creation/registration: two parallel ingests of a
 # document name that has never existed before. Exactly one coherent
 # document/active-version must result -- not two documents, not a
 # unique_violation surfaced as a 500.
-api POST "/collections/$COL1/documents" "$ALICE_TOKEN" '{"tenant":"acme","name":"race-first-create.md","content_type":"text/markdown","content":"first creation race content."}' /tmp/wf2_race_a.json > /tmp/wf2_race_a.code &
+api POST "/collections/$COL1/documents" "$ALICE_TOKEN" '{"tenant":"acme","name":"race-first-create.md","content_type":"text/markdown","content":"first creation race content."}' $WF2_TMP/race_a.json > $WF2_TMP/race_a.code &
 PID_A=$!
-api POST "/collections/$COL1/documents" "$ALICE_TOKEN" '{"tenant":"acme","name":"race-first-create.md","content_type":"text/markdown","content":"first creation race content."}' /tmp/wf2_race_b.json > /tmp/wf2_race_b.code &
+api POST "/collections/$COL1/documents" "$ALICE_TOKEN" '{"tenant":"acme","name":"race-first-create.md","content_type":"text/markdown","content":"first creation race content."}' $WF2_TMP/race_b.json > $WF2_TMP/race_b.code &
 PID_B=$!
-wait "$PID_A"; RACE_CODE_A=$(cat /tmp/wf2_race_a.code)
-wait "$PID_B"; RACE_CODE_B=$(cat /tmp/wf2_race_b.code)
+wait "$PID_A" || true; RACE_CODE_A=$(cat $WF2_TMP/race_a.code 2>/dev/null || true)
+wait "$PID_B" || true; RACE_CODE_B=$(cat $WF2_TMP/race_b.code 2>/dev/null || true)
 if [ "$RACE_CODE_A" = "201" ] && [ "$RACE_CODE_B" = "201" ]; then
     echo "ok: both concurrent first-creation requests succeeded, not a raw conflict error (http $RACE_CODE_A, http $RACE_CODE_B)"
 else
     echo "FAIL: concurrent first creation: expected 201/201, got $RACE_CODE_A/$RACE_CODE_B"
-    cat /tmp/wf2_race_a.json; cat /tmp/wf2_race_b.json
-    fail=1
+    cat $WF2_TMP/race_a.json; cat $WF2_TMP/race_b.json
+    fail=$((fail + 1))
 fi
-RACE_DOC_A=$(json_field id /tmp/wf2_race_a.json)
-RACE_DOC_B=$(json_field id /tmp/wf2_race_b.json)
+RACE_DOC_A=$(json_field id $WF2_TMP/race_a.json || true)
+RACE_DOC_B=$(json_field id $WF2_TMP/race_b.json || true)
 if [ "$RACE_DOC_A" = "$RACE_DOC_B" ]; then
     echo "ok: both requests resolved to the SAME document id ($RACE_DOC_A)"
 else
     echo "FAIL: concurrent first creation produced two different document ids: $RACE_DOC_A vs $RACE_DOC_B"
-    fail=1
+    fail=$((fail + 1))
 fi
 DOC_COUNT=$(pg_admin -c "SELECT count(*) FROM cortex.document WHERE collection_id = '$COL1' AND name = 'race-first-create.md'" | tr -d ' ')
 if [ "$DOC_COUNT" = "1" ]; then
     echo "ok: exactly one document row exists after the first-creation race"
 else
     echo "FAIL: expected exactly 1 document row, got $DOC_COUNT"
-    fail=1
+    fail=$((fail + 1))
 fi
 # Clean up: this document's only purpose was proving the race above is
 # safe. Left alive, it would be a second, unrelated-but-still-active
@@ -143,18 +149,18 @@ expect_code "clean up the first-creation race's test document" 204 "$code"
 # document: exactly one must become the final active version (whichever
 # commits last), with no orphaned chunk left searchable under the OTHER
 # content's digest once it's no longer active.
-api POST "/collections/$COL1/documents" "$ALICE_TOKEN" '{"tenant":"acme","name":"doc.md","content_type":"text/markdown","content":"CONTENT A: thirty days of sick leave per year."}' /tmp/wf2_compete_a.json > /tmp/wf2_compete_a.code &
+api POST "/collections/$COL1/documents" "$ALICE_TOKEN" '{"tenant":"acme","name":"doc.md","content_type":"text/markdown","content":"CONTENT A: thirty days of sick leave per year."}' $WF2_TMP/compete_a.json > $WF2_TMP/compete_a.code &
 PID_A=$!
-api POST "/collections/$COL1/documents" "$ALICE_TOKEN" '{"tenant":"acme","name":"doc.md","content_type":"text/markdown","content":"CONTENT B: forty days of sick leave per year."}' /tmp/wf2_compete_b.json > /tmp/wf2_compete_b.code &
+api POST "/collections/$COL1/documents" "$ALICE_TOKEN" '{"tenant":"acme","name":"doc.md","content_type":"text/markdown","content":"CONTENT B: forty days of sick leave per year."}' $WF2_TMP/compete_b.json > $WF2_TMP/compete_b.code &
 PID_B=$!
-wait "$PID_A"; COMPETE_CODE_A=$(cat /tmp/wf2_compete_a.code)
-wait "$PID_B"; COMPETE_CODE_B=$(cat /tmp/wf2_compete_b.code)
+wait "$PID_A" || true; COMPETE_CODE_A=$(cat $WF2_TMP/compete_a.code 2>/dev/null || true)
+wait "$PID_B" || true; COMPETE_CODE_B=$(cat $WF2_TMP/compete_b.code 2>/dev/null || true)
 if [ "$COMPETE_CODE_A" = "201" ] && [ "$COMPETE_CODE_B" = "201" ]; then
     echo "ok: both competing-content updates succeeded (http $COMPETE_CODE_A, http $COMPETE_CODE_B)"
 else
     echo "FAIL: competing updates: expected 201/201, got $COMPETE_CODE_A/$COMPETE_CODE_B"
-    cat /tmp/wf2_compete_a.json; cat /tmp/wf2_compete_b.json
-    fail=1
+    cat $WF2_TMP/compete_a.json; cat $WF2_TMP/compete_b.json
+    fail=$((fail + 1))
 fi
 wf2_wait_document_status "$COL1" "$DOC1" "$ALICE_TOKEN" ready 30
 ACTIVE_VERSIONS=$(pg_admin -c "SELECT count(*) FROM cortex.document_version WHERE document_id = '$DOC1' AND superseded_at IS NULL" | tr -d ' ')
@@ -162,22 +168,22 @@ if [ "$ACTIVE_VERSIONS" = "1" ]; then
     echo "ok: exactly one coherent active version after competing updates"
 else
     echo "FAIL: expected exactly 1 active (non-superseded) version, got $ACTIVE_VERSIONS"
-    fail=1
+    fail=$((fail + 1))
 fi
 code=$(api POST /search "$ALICE_TOKEN" "{\"tenant\":\"acme\",\"collection_id\":\"$COL1\",\"query\":\"sick leave\"}")
 SICK_LEAVE_RESULTS=$(json_field results)
 MATCHING=$(python3 -c "
 import json
-d = json.load(open('/tmp/wf2_api_body.json'))
+d = json.load(open('$WF2_BODY'))
 print(sum(1 for r in d.get('results', []) if r.get('document_id') == '$DOC1'))
 ")
 if [ "$MATCHING" -le 1 ]; then
     echo "ok: no more than one orphaned/duplicate result for this document after the race ($MATCHING)"
 else
     echo "FAIL: found $MATCHING results for document $DOC1 after competing updates -- an orphaned chunk is still searchable"
-    fail=1
+    fail=$((fail + 1))
 fi
-echo "scenario 2: PASS"
+scenario_result 2
 
 # --- Scenario 3: freshness (update, generation fence, delete+reinsert) ---
 echo "--- scenario 3: freshness ---"
@@ -188,8 +194,8 @@ code=$(api POST /search "$ALICE_TOKEN" "{\"tenant\":\"acme\",\"collection_id\":\
 SNIPPET=$(json_field results.0.snippet)
 case "$SNIPPET" in
   *"twenty days"*) echo "ok: search reflects only the updated content" ;;
-  *"fifteen days"*) echo "FAIL: search still returned the OLD content after an update"; fail=1 ;;
-  *) echo "FAIL: unexpected snippet: $SNIPPET"; fail=1 ;;
+  *"fifteen days"*) echo "FAIL: search still returned the OLD content after an update"; fail=$((fail + 1)) ;;
+  *) echo "FAIL: unexpected snippet: $SNIPPET"; fail=$((fail + 1)) ;;
 esac
 
 # The generation fence (ADR-0006 decision 3, reused unmodified here): this
@@ -207,7 +213,7 @@ if [ "$REVERT_GENERATION" -gt 1 ]; then
     echo "ok: reactivating a tombstoned key (same document, reverted digest) bumped generation to $REVERT_GENERATION"
 else
     echo "FAIL: expected generation > 1 after reactivating a tombstoned key, got $REVERT_GENERATION"
-    fail=1
+    fail=$((fail + 1))
 fi
 
 code=$(api POST /search "$ALICE_TOKEN" "{\"tenant\":\"acme\",\"collection_id\":\"$COL1\",\"query\":\"paid leave\"}")
@@ -221,7 +227,7 @@ if [ "$RESULTS" = "None" ] || [ "$RESULTS" = "[]" ]; then
     echo "ok: search finds nothing after delete"
 else
     echo "FAIL: search still finds results after delete: $RESULTS"
-    fail=1
+    fail=$((fail + 1))
 fi
 
 # A whole-document delete+reinsert generates a fresh document id (see
@@ -234,13 +240,13 @@ DOC1_REINSERTED=$(json_field id)
 wf2_wait_document_status "$COL1" "$DOC1_REINSERTED" "$ALICE_TOKEN" ready 30
 if [ "$DOC1_REINSERTED" = "$DOC1" ]; then
     echo "FAIL: reinsert after delete reused the same document id"
-    fail=1
+    fail=$((fail + 1))
 else
     echo "ok: reinsert after delete got a fresh document id ($DOC1_REINSERTED != $DOC1)"
 fi
 code=$(api GET "/evidence/$PRE_DELETE_CHUNK?tenant=acme" "$ALICE_TOKEN")
 expect_code "the pre-delete citation cannot be resurrected by the reinsert" 404 "$code"
-echo "scenario 3: PASS"
+scenario_result 3
 echo "note: chunker/model-version-change regeneration (a separate ADR-0007 decision 3 case) is validated at the design/unit level, not black-box here -- see the completion report"
 
 # --- Scenario 4: hybrid ranking (mechanics, not semantic quality) ---
@@ -258,16 +264,16 @@ if [ "$RESULT_DOC" = "$DOC_A" ]; then
     echo "ok: exact-term query ranks the lexically matching document first (top_k=1 honored)"
 else
     echo "FAIL: expected policy-a (expense/travel terms) to rank first, got document $RESULT_DOC"
-    fail=1
+    fail=$((fail + 1))
 fi
-RESULT_COUNT=$(python3 -c "import json; print(len(json.load(open('/tmp/wf2_api_body.json'))['results']))")
+RESULT_COUNT=$(python3 -c "import json; print(len(json.load(open('$WF2_BODY'))['results']))")
 if [ "$RESULT_COUNT" = "1" ]; then
     echo "ok: top_k=1 honored -- see helix-cortex internal/retrieval's unit tests (fuse_test.go, rerank_test.go) for hand-calculated RRF/overlap scores, independent of this black-box check"
 else
     echo "FAIL: top_k=1 returned $RESULT_COUNT results"
-    fail=1
+    fail=$((fail + 1))
 fi
-echo "scenario 4: PASS"
+scenario_result 4
 
 # --- Scenario 5: filtering before limits ---
 echo "--- scenario 5: filtering before limits ---"
@@ -284,12 +290,12 @@ wf2_wait_document_status "$COL_SECRET" "$DOC_SECRET" "$ALICE_TOKEN" ready 30
 # any ranking of COL_SECRET's content happens.
 code=$(api POST /search "$BOB_TOKEN" "{\"tenant\":\"acme\",\"collection_id\":\"$COL_SECRET\",\"query\":\"paid leave\"}")
 expect_code "forbidden collection rejected outright, not silently emptied" 403 "$code"
-BODY=$(cat /tmp/wf2_api_body.json)
+BODY=$(cat $WF2_BODY)
 case "$BODY" in
-  *"executive bonus"*) echo "FAIL: forbidden content leaked into the error body: $BODY"; fail=1 ;;
+  *"executive bonus"*) echo "FAIL: forbidden content leaked into the error body: $BODY"; fail=$((fail + 1)) ;;
   *) echo "ok: no forbidden content disclosed" ;;
 esac
-echo "scenario 5: PASS"
+scenario_result 5
 
 # --- Scenario 6: principal isolation (with positive controls) ---
 echo "--- scenario 6: principal isolation ---"
@@ -301,7 +307,7 @@ code=$(api POST /search "$CAROL_TOKEN" "{\"tenant\":\"globex\",\"collection_id\"
 expect_code "carol (other tenant, no grant) rejected" 403 "$code"
 code=$(api POST /search "$CAROL_TOKEN" "{\"tenant\":\"acme\",\"collection_id\":\"$COL1\",\"query\":\"paid leave\"}")
 expect_code "carol spoofing acme tenant rejected" 403 "$code"
-code=$(curl -s -o /tmp/wf2_api_body.json -w '%{http_code}' -X POST "$API/search" -H "Content-Type: application/json" -d "{\"tenant\":\"acme\",\"collection_id\":\"$COL1\",\"query\":\"x\"}")
+code=$(curl -s -o $WF2_BODY -w '%{http_code}' -X POST "$API/search" -H "Content-Type: application/json" -d "{\"tenant\":\"acme\",\"collection_id\":\"$COL1\",\"query\":\"x\"}")
 expect_code "missing credential rejected" 401 "$code"
 code=$(api POST /search "not-a-real-token" "{\"tenant\":\"acme\",\"collection_id\":\"$COL1\",\"query\":\"x\"}")
 expect_code "invalid credential rejected" 401 "$code"
@@ -321,7 +327,7 @@ while [ "$i" -lt 6 ]; do
     expect_code "pool-reuse round $i" "$want" "$code"
     i=$((i + 1))
 done
-echo "scenario 6: PASS"
+scenario_result 6
 
 # --- Scenario 7: revocation ---
 echo "--- scenario 7: revocation ---"
@@ -338,24 +344,19 @@ code=$(api GET "/evidence/$BOB_CITED_CHUNK?tenant=acme" "$BOB_TOKEN")
 expect_code "bob's earlier citation now fails to resolve" 404 "$code"
 code=$(api POST /search "$ALICE_TOKEN" "{\"tenant\":\"acme\",\"collection_id\":\"$COL1\",\"query\":\"paid leave\"}")
 expect_code "alice (remaining authorized owner) still succeeds" 200 "$code"
-echo "scenario 7: PASS"
+scenario_result 7
 
 # --- Scenario 8: in-flight revocation (deterministic barrier) ---
 echo "--- scenario 8: in-flight revocation ---"
-# Snapshot the global fail counter: scenario 3's known/accepted design-level
-# gap already left fail=1 by this point, so the PASS/FAIL label below must
-# compare against this snapshot, not against fail itself, or scenario 8
-# would always print FAIL regardless of its own outcome.
-s8_fail_before=$fail
 code=$(api POST "/collections/$COL1/permissions" "$ALICE_TOKEN" '{"principal":"bob","role":"reader"}')
 expect_code "re-grant bob for this scenario" 201 "$code"
 BARRIER_TOKEN="wf2-barrier-$$"
 (
-    curl -s -o /tmp/wf2_inflight_response.json -w '%{http_code}' -X POST "$API/answers" \
+    curl -s --max-time "$WF2_HTTP_TIMEOUT" -o $WF2_TMP/inflight_response.json -w '%{http_code}' -X POST "$API/answers" \
         -H "Authorization: Bearer $BOB_TOKEN" -H "Content-Type: application/json" \
         -H "X-Test-Barrier-Token: $BARRIER_TOKEN" \
         -d "{\"tenant\":\"acme\",\"collection_id\":\"$COL1\",\"query\":\"paid leave\"}" \
-        > /tmp/wf2_inflight_code.txt
+        > $WF2_TMP/inflight_code.txt
 ) &
 INFLIGHT_PID=$!
 
@@ -378,7 +379,7 @@ if [ "$arrived" -eq 1 ]; then
     echo "ok: in-flight request paused at the barrier (candidates already selected)"
 else
     echo "FAIL: the in-flight answer request never reached the barrier"
-    fail=1
+    fail=$((fail + 1))
 fi
 
 code=$(api DELETE "/collections/$COL1/permissions/bob" "$ALICE_TOKEN")
@@ -386,27 +387,29 @@ expect_code "revoke bob while the other request is paused" 204 "$code"
 
 curl -s -o /dev/null -X POST "$API/__test/barrier/$BARRIER_TOKEN/release"
 wait "$INFLIGHT_PID" || true
-INFLIGHT_HTTP=$(cat /tmp/wf2_inflight_code.txt 2>/dev/null || echo "")
-INFLIGHT_BODY=$(cat /tmp/wf2_inflight_response.json 2>/dev/null || echo "")
+INFLIGHT_HTTP=$(cat $WF2_TMP/inflight_code.txt 2>/dev/null || echo "")
+INFLIGHT_BODY=$(cat $WF2_TMP/inflight_response.json 2>/dev/null || echo "")
+# The resumed request re-checks bob's grant in a fresh snapshot
+# (store.Answer's requireRole) and must be denied outright.
+if [ "$INFLIGHT_HTTP" != "403" ]; then
+    echo "FAIL: the in-flight answer request after revocation: want http 403, got ${INFLIGHT_HTTP:-none}"
+    fail=$((fail + 1))
+fi
 if [ -z "$INFLIGHT_BODY" ]; then
     echo "FAIL: the in-flight answer request produced no response body (http=$INFLIGHT_HTTP)"
-    fail=1
+    fail=$((fail + 1))
 else
     case "$INFLIGHT_BODY" in
       *"paid leave"*|*"twenty days"*)
         echo "FAIL: a revoked passage escaped the in-flight request (http=$INFLIGHT_HTTP): $INFLIGHT_BODY"
-        fail=1
+        fail=$((fail + 1))
         ;;
       *)
         echo "ok: no revoked passage/citation escaped the in-flight request (http=$INFLIGHT_HTTP)"
         ;;
     esac
 fi
-if [ "$fail" -eq "$s8_fail_before" ]; then
-    echo "scenario 8: PASS"
-else
-    echo "scenario 8: FAIL"
-fi
+scenario_result 8
 
 # --- Scenario 9: evidence integrity ---
 echo "--- scenario 9: evidence integrity ---"
@@ -415,25 +418,25 @@ expect_code "fabricated chunk id rejected" 404 "$code"
 FAKE_CHUNK="$DOC_A|0000000000000000000000000000000000000000000000000000000000000000|chunker-v1|0"
 code=$(api GET "/evidence/$FAKE_CHUNK?tenant=acme" "$ALICE_TOKEN")
 expect_code "mismatched digest rejected" 404 "$code"
-echo "scenario 9: PASS"
+scenario_result 9
 
 # --- Scenario 10: bounded, untrusted input ---
 echo "--- scenario 10: bounded untrusted input ---"
 code=$(api POST "/collections/$COL1/documents" "$ALICE_TOKEN" '{"tenant":"acme","name":"bad.pdf","content_type":"application/pdf","content":"whatever"}')
 expect_code "unsupported content type rejected" 400 "$code"
-case "$(cat /tmp/wf2_api_body.json)" in
+case "$(cat $WF2_BODY)" in
   *unsupported_content_type*) echo "ok: unsupported_content_type code returned" ;;
-  *) echo "FAIL: wrong error code for unsupported content type"; fail=1 ;;
+  *) echo "FAIL: wrong error code for unsupported content type"; fail=$((fail + 1)) ;;
 esac
 OVERSIZED=$(python3 -c "print('x' * 1100000)")
 code=$(api POST "/collections/$COL1/documents" "$ALICE_TOKEN" "{\"tenant\":\"acme\",\"name\":\"huge.txt\",\"content_type\":\"text/plain\",\"content\":\"$OVERSIZED\"}")
 expect_code "oversized document rejected" 400 "$code"
 echo "ok: remote URL ingestion is unavailable -- no such endpoint exists in this milestone (deliberate scope limit, ADR-0007)"
-echo "scenario 10: PASS"
+scenario_result 10
 
 if [ "$fail" -eq 0 ]; then
     echo "workflow-2 acceptance: ALL SCENARIOS PASS"
 else
     echo "workflow-2 acceptance: FAILED"
 fi
-exit $fail
+[ "$fail" -eq 0 ]
