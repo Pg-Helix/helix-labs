@@ -148,3 +148,58 @@ the **dev** split, comparing stage 4 (hybrid, pre-rerank) against stage
 This is the only tuning decision this protocol allows between dev and
 held-out; it is made from dev data only and verified (not re-decided)
 on held-out.
+
+## Revision 2026-11-21: measurement notes (definitions and targets unchanged)
+
+This section records how `run-eval.sh`/`score.py` implement the rules
+above, and three discrepancies found while doing so. No metric
+definition, threshold, label, split or corpus file changed;
+`HASHES.txt` still verifies.
+
+- **Counts.** The hash-pinned `queries.jsonl` has 4 held-out
+  `paraphrase` and 2 held-out `exact_term` queries (not 5 and 3), and a
+  20 dev / 14 held_out split (not 17/17). Category totals match. Every
+  reported figure states its actual `n`. The targets apply to those
+  actual sets.
+- **Label defect.** C3's snippet `does not change paid leave accrual`
+  does not occur in `remote-work-policy.md` (`do not change ...`). Under
+  the passage rule, C3 has no relevant chunk. It is a dev `distractor`
+  and feeds no target or Decision D, so it is reported and excluded
+  (`n_scored`). An unresolvable label on a held-out `paraphrase`/
+  `exact_term` query or a dev `paraphrase` query fails the run instead.
+  Fixing C3 requires its own visible revision here plus a `HASHES.txt`
+  update.
+- **Relevance** is resolved against each run's full chunk inventory
+  (`chunks.jsonl`, the cortex chunk rows). Search snippets are not used
+  because they are truncated to 200 characters. A chunk repeated within
+  one result list counts once.
+- **Unauthorized disclosure** is measured at all four ranking stages
+  (FTS-only, dense-only, hybrid pre-rerank via the test-only
+  `X-Eval-Stage` header, and the served `/search`), plus `/answers`. Bob
+  holds no grant, so every request must be the documented `403
+  forbidden`. The whole raw body, whatever its status, is scanned for
+  restricted document/chunk ids, file names, sentences and labeled
+  snippets. Alice runs the same queries at all four stages as a positive
+  control: the fixture exists, and each stage path returns restricted
+  results to an authorized caller.
+- **no_answer** is scored on `POST /answers`, the endpoint that asserts
+  an answer. "Top result" means its first citation. The answer is
+  incorrect if that chunk is labeled relevant to any other query, and
+  an answer with no citation counts as abstaining. The `/search` final
+  top-1 is reported alongside but does not gate. Open ambiguity: the
+  word "confidently" has no counterpart in the extractive contract,
+  which exposes no confidence or abstention signal, so every cited
+  answer counts as asserted. No threshold was invented. Resolving this
+  needs a product decision (helix-cortex + helix-atlas) on whether and
+  how `/answers` abstains.
+- **Decision D** is recomputed from the real (reranker-on) pass's dev
+  `paraphrase` queries in every scoring run. The held-out targets are
+  evaluated on the configuration it selects: `real`, or `real-norerank`
+  (`CORTEX_DISABLE_RERANK=1`). The report records that served profile,
+  verified from the running container, not from a directory name.
+- **Historical numbers.** Results produced before this revision carry no
+  run metadata, so their provider, revision and completion cannot be
+  verified, and they are not evidence for any gate. The figures
+  0.091/0.803/0.924 quoted in helix-labs PR #6 are held-out Recall@5
+  over all 11 ranked queries (FTS / final with reranker / hybrid), not
+  the paraphrase subset.

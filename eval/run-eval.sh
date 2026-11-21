@@ -1,136 +1,155 @@
 #!/bin/sh
 # Runs helix-labs/eval's retrieval comparison (PROTOCOL.md) against one
-# provider profile. Reuses workflow-2/lib.sh's proven compose/api/
-# json_field helpers rather than a parallel copy of that plumbing.
+# provider profile, on its own fresh stack, and records everything
+# score.py needs to validate before it computes anything.
 #
-# Usage: sh run-eval.sh mock|real
+# Usage: sh run-eval.sh mock|real|real-norerank [OUT_DIR]
+#   mock           Foundry default (helix-infer Mock embeddings) -- plumbing baseline
+#   real           + docker-compose.real-embeddings.yml (nomic-embed-text:v1.5 via Ollama)
+#   real-norerank  real, with CORTEX_DISABLE_RERANK=1 (PROTOCOL.md Decision D)
+# OUT_DIR defaults to eval/results-<profile>. An existing OUT_DIR is only
+# replaced if it is empty or was written by this script (marker file).
 #
-# Each invocation brings up its OWN stack (mock profile, or real via
-# WF2_REAL_EMBEDDINGS=1), ingests eval/corpus fresh, waits for every
-# document to become ready, then for each labeled query in
-# queries.jsonl calls /search once per applicable ranking stage
-# (fts-only is computed in both passes as a consistency check; dense-
-# only/hybrid-prererank/final reflect whichever provider this pass is
-# running) via the test-only X-Eval-Stage header (CORTEX_TEST_HOOKS=1).
-# Raw results go to results-<label>/ as one JSON file per query+stage;
-# score.py (run separately, after both passes) computes the actual
-# metrics and the comparison table.
+# OUT_DIR contents:
+#   run.json          profile, completed flag, git revisions + dirty state,
+#                     input hashes, effective provider/model/reranker (read
+#                     from the running containers), DB embedding binding
+#   doc_ids.tsv       corpus file -> cortex document id -> collection
+#   chunks.jsonl      every active chunk (id, document, FULL text) -- the
+#                     inventory passage-level relevance is resolved against
+#   <query>__<stage>.json/.code   one response body + HTTP status per request
+#                     (score.py plan lists them: all four ranking stages for
+#                     every query; /answers for no_answer; unauthorized
+#                     queries as bob at all four stages + /answers, plus an
+#                     authorized alice control at all four stages)
+# The X-Eval-Stage header (dense-only, fts-only, hybrid-prererank) is
+# test-only instrumentation, live only because this sets
+# CORTEX_TEST_HOOKS=1; "final" is the ordinary served /search path.
 set -eu
 EVAL_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-WF2_DIR="$EVAL_DIR/../workflow-2"
 
-PROVIDER_LABEL=${1:?usage: sh run-eval.sh mock|real}
-case "$PROVIDER_LABEL" in
-    mock) ;;
-    real) WF2_REAL_EMBEDDINGS=1; export WF2_REAL_EMBEDDINGS ;;
-    *) echo "usage: sh run-eval.sh mock|real" >&2; exit 1 ;;
+PROFILE=${1:?usage: sh run-eval.sh mock|real|real-norerank [OUT_DIR]}
+case "$PROFILE" in
+    mock) WF2_REAL_EMBEDDINGS=0; CORTEX_DISABLE_RERANK=0 ;;
+    real) WF2_REAL_EMBEDDINGS=1; CORTEX_DISABLE_RERANK=0 ;;
+    real-norerank) WF2_REAL_EMBEDDINGS=1; CORTEX_DISABLE_RERANK=1 ;;
+    *) echo "usage: sh run-eval.sh mock|real|real-norerank [OUT_DIR]" >&2; exit 64 ;;
 esac
+export WF2_REAL_EMBEDDINGS CORTEX_DISABLE_RERANK
+
+OUT_DIR=${2:-$EVAL_DIR/results-$PROFILE}
+case "$OUT_DIR" in /*) ;; *) OUT_DIR="$PWD/$OUT_DIR" ;; esac
+MARKER=.helix-eval-results
+# Validate before anything is deleted: never a symlink, never a non-
+# directory, never a populated directory this script did not create.
+if [ -L "$OUT_DIR" ] || { [ -e "$OUT_DIR" ] && [ ! -d "$OUT_DIR" ]; }; then
+    echo "run-eval: refusing OUT_DIR $OUT_DIR (symlink or not a directory)" >&2; exit 64
+fi
+if [ -d "$OUT_DIR" ] && [ -n "$(ls -A "$OUT_DIR")" ] && [ ! -f "$OUT_DIR/$MARKER" ]; then
+    echo "run-eval: refusing to replace $OUT_DIR: not empty and not written by run-eval.sh (move historical results elsewhere)" >&2; exit 64
+fi
 
 CORTEX_TEST_HOOKS=1
 export CORTEX_TEST_HOOKS
-. "$WF2_DIR/lib.sh"
-
+. "$EVAL_DIR/../workflow-2/lib.sh"
 trap wf2_cleanup EXIT INT TERM
+
+STARTED=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 wf2_up
 
-OUT_DIR="$EVAL_DIR/results-$PROVIDER_LABEL"
 rm -rf "$OUT_DIR"
 mkdir -p "$OUT_DIR"
+: > "$OUT_DIR/$MARKER"
 
-echo "eval($PROVIDER_LABEL): creating collections"
-code=$(api POST /collections "$ALICE_TOKEN" '{"tenant":"acme","name":"eval-public"}')
-[ "$code" = "201" ] || { echo "FAIL: create eval-public ($code)"; cat /tmp/wf2_api_body.json; exit 1; }
-COL_PUBLIC=$(json_field id)
-code=$(api POST /collections "$ALICE_TOKEN" '{"tenant":"acme","name":"eval-restricted"}')
-[ "$code" = "201" ] || { echo "FAIL: create eval-restricted ($code)"; cat /tmp/wf2_api_body.json; exit 1; }
-COL_RESTRICTED=$(json_field id)
-# Bob gets NO grant on eval-restricted -- he is this eval's "unauthorized"
-# test principal for the F* queries. Alice (the creator/owner) is the
-# only authorized principal for it.
+# write_meta COMPLETED [REQUESTS]: run.json, rewritten at the end with
+# completed=true -- a crashed run leaves completed=false behind.
+write_meta() {
+    BINDING=${BINDING:-[]} STARTED="$STARTED" PROFILE="$PROFILE" ROOT="$EVAL_DIR/../.." \
+        python3 - "$OUT_DIR/run.json" "$EVAL_DIR" "$WF2_TMP/provider.json" "$1" "${2:-0}" <<'EOF'
+import datetime, hashlib, json, os, pathlib, re, subprocess, sys
+out, eval_dir, provider, completed, requests = sys.argv[1:6]
+root = pathlib.Path(os.environ["ROOT"]).resolve()
+def git(repo, *a):
+    return subprocess.run(["git", "-C", str(root / repo), *a], capture_output=True, text=True).stdout
+revs = {}
+for r in ("helix-labs", "helix-foundry", "helix-kernel", "helix-cortex"):
+    dirty = git(r, "status", "--porcelain", "--untracked-files=no").strip() != ""
+    revs[r] = {"commit": git(r, "rev-parse", "HEAD").strip() or None, "dirty": dirty,
+               "diff_sha256": hashlib.sha256(git(r, "diff", "HEAD").encode()).hexdigest() if dirty else None}
+gomod = (root / "helix-cortex" / "go.mod").read_text()
+deps = dict(re.findall(r"github.com/Pg-Helix/(helix-infer|helix-protocol)\S*\s+(\S+)", gomod))
+corpus = sorted(pathlib.Path(eval_dir, "corpus").rglob("*.md"))
+meta = {
+    "schema": 1, "profile": os.environ["PROFILE"], "completed": completed == "true",
+    "started_at": os.environ["STARTED"],
+    "finished_at": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ") if completed == "true" else None,
+    "requests": int(requests),
+    "inputs": {"queries_sha256": hashlib.sha256(pathlib.Path(eval_dir, "queries.jsonl").read_bytes()).hexdigest(),
+               "corpus_sha256": hashlib.sha256(b"".join(p.read_bytes() for p in corpus)).hexdigest()},
+    "revisions": revs, "cortex_go_mod": deps,
+    "provider": json.load(open(provider)),
+    "db_binding": json.loads(os.environ["BINDING"]),
+}
+json.dump(meta, open(out, "w"), indent=2)
+EOF
+}
+write_meta false
 
-echo "eval($PROVIDER_LABEL): ingesting public corpus"
-: > "$OUT_DIR/doc_ids.tsv"
-for f in "$EVAL_DIR"/corpus/*.md; do
-    name=$(basename "$f")
-    content=$(cat "$f")
-    body=$(python3 -c "import json,sys; print(json.dumps({'tenant':'acme','name':sys.argv[1],'content_type':'text/markdown','content':sys.argv[2]}))" "$name" "$content")
-    code=$(api POST "/collections/$COL_PUBLIC/documents" "$ALICE_TOKEN" "$body")
-    [ "$code" = "201" ] || { echo "FAIL: ingest $name ($code)"; cat /tmp/wf2_api_body.json; exit 1; }
-    docid=$(json_field id)
-    printf '%s\t%s\t%s\n' "$name" "$docid" "public" >> "$OUT_DIR/doc_ids.tsv"
-    wf2_wait_document_status "$COL_PUBLIC" "$docid" "$ALICE_TOKEN" ready 60
-done
-
-echo "eval($PROVIDER_LABEL): ingesting restricted corpus"
-for f in "$EVAL_DIR"/corpus/restricted/*.md; do
-    name=$(basename "$f")
-    content=$(cat "$f")
-    body=$(python3 -c "import json,sys; print(json.dumps({'tenant':'acme','name':sys.argv[1],'content_type':'text/markdown','content':sys.argv[2]}))" "$name" "$content")
-    code=$(api POST "/collections/$COL_RESTRICTED/documents" "$ALICE_TOKEN" "$body")
-    [ "$code" = "201" ] || { echo "FAIL: ingest restricted $name ($code)"; cat /tmp/wf2_api_body.json; exit 1; }
-    docid=$(json_field id)
-    printf '%s\t%s\t%s\n' "$name" "$docid" "restricted" >> "$OUT_DIR/doc_ids.tsv"
-    wf2_wait_document_status "$COL_RESTRICTED" "$docid" "$ALICE_TOKEN" ready 60
-done
-
-run_query() {
-    qid=$1 collection=$2 text=$3 stage=$4 token=$5
-    outfile="$OUT_DIR/${qid}__${stage}.json"
-    body=$(python3 -c "import json,sys; print(json.dumps({'tenant':'acme','collection_id':sys.argv[1],'query':sys.argv[2],'top_k':10}))" "$collection" "$text")
-    if [ "$stage" = "final" ]; then
-        extra=""
-    else
-        extra="X-Eval-Stage: $stage"
-    fi
-    code=$(api_json POST /search "$token" "$body" "$extra")
-    echo "$code" > "$OUT_DIR/${qid}__${stage}.code"
-    cp /tmp/wf2_api_body.json "$outfile"
+# ingest COLLECTION_ID LABEL FILES...
+ingest() {
+    _col=$1 _label=$2; shift 2
+    for f in "$@"; do
+        name=$(basename "$f")
+        body=$(python3 -c "import json,sys; print(json.dumps({'tenant':'acme','name':sys.argv[1],'content_type':'text/markdown','content':open(sys.argv[2]).read()}))" "$name" "$f")
+        code=$(api POST "/collections/$_col/documents" "$ALICE_TOKEN" "$body")
+        [ "$code" = "201" ] || { echo "run-eval: ingest $name failed (http $code)" >&2; cat "$WF2_BODY" >&2; exit 1; }
+        docid=$(json_field id)
+        printf '%s\t%s\t%s\n' "$name" "$docid" "$_label" >> "$OUT_DIR/doc_ids.tsv"
+        wf2_wait_document_status "$_col" "$docid" "$ALICE_TOKEN" ready 120
+    done
 }
 
-echo "eval($PROVIDER_LABEL): running queries"
-python3 -c "
-import json
-with open('$EVAL_DIR/queries.jsonl') as f:
-    for line in f:
-        line = line.strip()
-        if line:
-            print(json.loads(line)['id'])
-" | while read -r qid; do
-    QUERY_JSON=$(python3 -c "
-import json
-with open('$EVAL_DIR/queries.jsonl') as f:
-    for line in f:
-        line = line.strip()
-        if not line: continue
-        q = json.loads(line)
-        if q['id'] == '$qid':
-            print(json.dumps(q))
-            break
-")
-    text=$(python3 -c "import json,sys; print(json.loads(sys.argv[1])['text'])" "$QUERY_JSON")
-    category=$(python3 -c "import json,sys; print(json.loads(sys.argv[1])['category'])" "$QUERY_JSON")
-    coll_label=$(python3 -c "import json,sys; print(json.loads(sys.argv[1])['collection'])" "$QUERY_JSON")
+echo "eval($PROFILE): creating collections"
+code=$(api POST /collections "$ALICE_TOKEN" '{"tenant":"acme","name":"eval-public"}')
+[ "$code" = "201" ] || { echo "run-eval: create eval-public failed (http $code)" >&2; exit 1; }
+COL_PUBLIC=$(json_field id)
+code=$(api POST /collections "$ALICE_TOKEN" '{"tenant":"acme","name":"eval-restricted"}')
+[ "$code" = "201" ] || { echo "run-eval: create eval-restricted failed (http $code)" >&2; exit 1; }
+COL_RESTRICTED=$(json_field id)
+# Alice creates (owns) both; bob holds NO grant on eval-restricted -- he
+# is the unauthorized principal for the F* queries.
 
-    if [ "$coll_label" = "public" ]; then
-        collection="$COL_PUBLIC"
-        token="$ALICE_TOKEN"
-    else
-        collection="$COL_RESTRICTED"
-        # Unauthorized queries run as Bob, who holds no grant here --
-        # the correct, required outcome is a 403 / zero disclosure for
-        # every stage, checked by score.py.
-        token="$BOB_TOKEN"
+echo "eval($PROFILE): ingesting corpus"
+: > "$OUT_DIR/doc_ids.tsv"
+ingest "$COL_PUBLIC" public "$EVAL_DIR"/corpus/*.md
+ingest "$COL_RESTRICTED" restricted "$EVAL_DIR"/corpus/restricted/*.md
+
+pg_admin -c "SELECT json_build_object(
+        'chunk_id', c.document_id || '|' || c.content_digest || '|' || c.chunker_version || '|' || c.chunk_index,
+        'document_id', c.document_id, 'text', c.text)
+    FROM cortex.chunk c JOIN cortex.document_version v ON v.id = c.document_version_id
+    WHERE v.superseded_at IS NULL AND c.collection_id IN ('$COL_PUBLIC', '$COL_RESTRICTED')
+    ORDER BY 1::text" > "$OUT_DIR/chunks.jsonl"
+BINDING=$(pg_admin -c "SELECT coalesce(json_agg(json_build_object('model_id', model_id, 'model_revision', model_revision,
+        'dims', dims, 'metric', metric, 'pipeline_version', pipeline_version) ORDER BY id), '[]')
+    FROM helix_ai.source WHERE schema_name = 'cortex' AND table_name = 'chunk'")
+export BINDING
+
+echo "eval($PROFILE): running queries"
+python3 "$EVAL_DIR/score.py" plan "$COL_PUBLIC" "$COL_RESTRICTED" > "$WF2_TMP/plan.tsv"
+TAB=$(printf '\t')
+n=0
+while IFS="$TAB" read -r name endpoint principal stage body; do
+    case "$principal" in alice) token=$ALICE_TOKEN ;; bob) token=$BOB_TOKEN ;; esac
+    [ "$stage" = "-" ] && hdr="" || hdr="X-Eval-Stage: $stage"
+    code=$(api POST "$endpoint" "$token" "$body" "$OUT_DIR/$name.json" "$hdr" || true)
+    echo "$code" > "$OUT_DIR/$name.code"
+    if [ "$code" = "000" ] || [ -z "$code" ]; then
+        echo "run-eval: $name got no HTTP response; aborting (run.json stays completed=false)" >&2
+        exit 1
     fi
+    n=$((n + 1))
+done < "$WF2_TMP/plan.tsv"
 
-    if [ "$category" = "no_answer" ] || [ "$category" = "unauthorized" ]; then
-        run_query "$qid" "$collection" "$text" "final" "$token"
-    else
-        run_query "$qid" "$collection" "$text" "fts-only" "$token"
-        run_query "$qid" "$collection" "$text" "dense-only" "$token"
-        run_query "$qid" "$collection" "$text" "hybrid-prererank" "$token"
-        run_query "$qid" "$collection" "$text" "final" "$token"
-    fi
-    echo "eval($PROVIDER_LABEL): $qid done"
-done
-
-echo "eval($PROVIDER_LABEL): done -- results in $OUT_DIR"
+write_meta true "$n"
+echo "eval($PROFILE): done -- $n requests, results in $OUT_DIR"
