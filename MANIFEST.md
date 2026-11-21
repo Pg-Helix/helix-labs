@@ -26,24 +26,46 @@ only one row per repo below, and it is what both acceptance gates are tested aga
 | helix-infer | feat/i1-provider-interface | `444d5213ccb97dfb7dd438db689c93b646dd505c` | [#5](https://github.com/Pg-Helix/helix-infer/pull/5) |
 | helix-infer | feat/real-embedding-provider (stacked on feat/i1-provider-interface) | `b577bff4e6a34fb41bcd48611688efcf25249b54` | [#6](https://github.com/Pg-Helix/helix-infer/pull/6) |
 | helix-cortex | feat/workflow2-ingestion-retrieval (stacked on feat/c1-worker; serves both workflows) | `ec6df64af9ce41009e57e046d28903012b45f875` | [#5](https://github.com/Pg-Helix/helix-cortex/pull/5) |
-| helix-cortex | feat/real-embedding-provider (stacked on feat/workflow2-ingestion-retrieval; serves all three workflows/milestones) | `74213448fcd5d8521263098b6bd65db7885041ef` | [#6](https://github.com/Pg-Helix/helix-cortex/pull/6) |
+| helix-cortex | feat/real-embedding-provider (stacked on feat/workflow2-ingestion-retrieval; serves all three workflows/milestones) | `56e6c92f88d3b775a4d4e3de231319e476dd71f7` | [#6](https://github.com/Pg-Helix/helix-cortex/pull/6) |
 | helix-foundry | feat/workflow2-pgvector (stacked on feat/phase1-local-stack; serves both workflows) | `85637c8068427329ec32622b1954b852a48bbd72` | [#5](https://github.com/Pg-Helix/helix-foundry/pull/5) |
-| helix-foundry | feat/real-embedding-provider (stacked on feat/workflow2-pgvector) | `762407f8ac4b26c4c22fde4238cc1f55e62974ea` | [#6](https://github.com/Pg-Helix/helix-foundry/pull/6) |
+| helix-foundry | feat/real-embedding-provider (stacked on feat/workflow2-pgvector) | `18dffc19bb9cb79fbd83f9250e21682dd5936f9c` | [#6](https://github.com/Pg-Helix/helix-foundry/pull/6) |
 | helix-labs | feat/workflow1-demo | this repo's own current `HEAD` -- not pinned here, since a commit adding/editing this file cannot name its own final SHA in advance | [#4](https://github.com/Pg-Helix/helix-labs/pull/4) |
 | helix-labs | feat/workflow2-acceptance (stacked on feat/workflow1-demo) | this repo's own current `HEAD` -- not pinned here, for the same reason as above | [#5](https://github.com/Pg-Helix/helix-labs/pull/5) |
 | helix-labs | feat/real-embedding-eval (stacked on feat/workflow2-acceptance) | this repo's own current `HEAD` -- not pinned here, for the same reason as above | [#6](https://github.com/Pg-Helix/helix-labs/pull/6) |
 
-`prepare-checkouts.sh` only clones/pins `helix-foundry`, `helix-kernel` and `helix-cortex`
-next to this repo -- the three repos either workflow's scripts actually check out or
-build from directly (Foundry's Compose stack builds the kernel extension and runs the
-cortex-api/worker images itself; helix-protocol and helix-infer are consumed as library
-dependencies/contract docs by those builds -- `go.mod`/`go.sum` pin their exact commits
-inside helix-cortex's own checkout -- not checked out separately by this manifest).
+## Effective pins
+
+The commits `prepare-checkouts.sh` and CI (`.github/workflows/ci.yml`, which runs
+that same script) actually check out. Every stack-building job and a clean local
+reproduction resolve exactly these three rows -- the table above is the PR stack's
+history; this section is what is built and tested.
+
+| repo | commit |
+|---|---|
+| helix-foundry | `18dffc19bb9cb79fbd83f9250e21682dd5936f9c` |
+| helix-kernel | `0f5bec3ee5f5f9506d0be87c1bec856836d10080` |
+| helix-cortex | `56e6c92f88d3b775a4d4e3de231319e476dd71f7` |
+
+helix-protocol and helix-infer are not checked out separately: helix-cortex's
+`go.mod`/`go.sum` pin them inside the cortex image build (`eval/run-eval.sh` records
+those versions in each run's `run.json`). helix-atlas is documentation only.
 
 ## Reproducing
 
+Use a disposable parent directory: the script detaches each sibling at its pin and
+refuses to touch one with uncommitted changes.
+
 ```
-sh prepare-checkouts.sh    # clones/pins helix-foundry, helix-kernel, helix-cortex
-cd workflow-1 && ./acceptance.sh
-cd ../workflow-2 && ./acceptance.sh
+mkdir helix-repro && cd helix-repro
+git clone -b feat/real-embedding-eval https://github.com/Pg-Helix/helix-labs.git
+sh helix-labs/prepare-checkouts.sh       # clones/pins helix-foundry, helix-kernel, helix-cortex
+export COMPOSE_BAKE=false                # classic builder; see ci.yml
+python3 -m unittest -v helix-labs/eval/test_score.py   # offline, seconds
+cd helix-labs/workflow-1 && sh acceptance.sh
+cd ../workflow-2 && sh acceptance.sh && sh version-change.sh
+cd ../eval && sh run-eval.sh mock && sh run-eval.sh real && sh run-eval.sh real-norerank
+python3 score.py                         # exit 0 pass / 1 target missed / 2 invalid evidence
 ```
+
+Each script brings up and tears down its own Compose project on fixed loopback ports
+(55480 by default): run them one at a time on a host.

@@ -1,37 +1,33 @@
 #!/bin/sh
-# Creates and pins the sibling checkouts workflow-1's scripts assume
-# (helix-foundry, helix-kernel, helix-cortex, helix-infer, helix-protocol
-# next to this repo), at the exact commits recorded in MANIFEST.md.
-# Safe to re-run: fetches and checks out the pinned commit in an
-# existing checkout rather than re-cloning. Run from a clean clone of
-# this repo to reproduce the acceptance gate exactly.
+# Clones/pins the sibling checkouts the workflow scripts build from
+# (helix-foundry, helix-kernel, helix-cortex next to this repo) at the
+# commits in MANIFEST.md's "Effective pins" section -- the single
+# source both a clean local reproduction and CI (.github/workflows/
+# ci.yml) resolve, so the two can never test different stacks.
+#
+# Detaches each sibling at its pinned commit. Meant for a disposable
+# directory of clones; it refuses to touch a sibling with uncommitted
+# changes. Works with linked worktrees (.git as a file) too.
 set -eu
-MANIFEST="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)/MANIFEST.md"
-PARENT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
+HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+PARENT=$(CDPATH= cd -- "$HERE/.." && pwd)
 
-# Parses MANIFEST.md's "| repo | ref | commit |" table rows.
-# Restricted to exactly the three repos this script actually checks out
-# (see the note below the table in MANIFEST.md) -- the unrestricted
-# '^\| helix-' pattern used here previously also matched the
-# helix-atlas/helix-protocol/helix-infer/helix-labs rows, the last of
-# which resolves to this very repo's own directory (git fetch/checkout
-# against a commit column that isn't even a real SHA for that row) --
-# a real bug, caught by actually running this end to end rather than
-# only reading it.
-grep -E '^\| (helix-foundry|helix-kernel|helix-cortex) ' "$MANIFEST" | while IFS='|' read -r _ repo ref commit _; do
-    repo=$(echo "$repo" | xargs)
-    # Strip markdown backticks around the SHA in the table (`abc123`) --
-    # left in place, git fetch/checkout receive a literal backtick-
-    # wrapped string and fail with "couldn't find remote ref `abc123`".
-    commit=$(echo "$commit" | xargs | tr -d '`')
+# Rows of the "Effective pins" table only: | repo | `sha` |
+pins=$(awk '/^## Effective pins/{on=1; next} /^## /{on=0} on && /^\| helix-/' "$HERE/MANIFEST.md" |
+    awk -F'|' '{gsub(/[ `]/, "", $2); gsub(/[ `]/, "", $3); print $2, $3}')
+[ "$(echo "$pins" | wc -l)" -eq 3 ] || { echo "prepare-checkouts.sh: expected 3 effective pins in MANIFEST.md, got: $pins" >&2; exit 1; }
+
+echo "$pins" | while read -r repo commit; do
+    echo "$commit" | grep -Eq '^[0-9a-f]{40}$' || { echo "prepare-checkouts.sh: bad commit for $repo: $commit" >&2; exit 1; }
     dir="$PARENT/$repo"
-    if [ ! -d "$dir/.git" ]; then
+    if ! git -C "$dir" rev-parse --git-dir >/dev/null 2>&1; then
         echo "prepare-checkouts.sh: cloning $repo"
-        git clone "https://github.com/Pg-Helix/$repo.git" "$dir"
+        git clone -q "https://github.com/Pg-Helix/$repo.git" "$dir"
+    elif [ -n "$(git -C "$dir" status --porcelain --untracked-files=no)" ]; then
+        echo "prepare-checkouts.sh: $dir has uncommitted changes; refusing to detach it" >&2
+        exit 1
     fi
-    echo "prepare-checkouts.sh: pinning $repo to $commit"
-    git -C "$dir" fetch origin "$commit"
-    git -C "$dir" checkout --detach "$commit"
+    git -C "$dir" fetch -q origin "$commit"
+    git -C "$dir" checkout -q --detach "$commit"
+    echo "prepare-checkouts.sh: $repo @ $(git -C "$dir" rev-parse HEAD)"
 done
-
-echo "prepare-checkouts.sh: done -- sibling checkouts pinned per MANIFEST.md"

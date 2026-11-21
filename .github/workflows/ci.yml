@@ -5,169 +5,122 @@ on:
     branches: [main]
   pull_request:
 
+# Every stack-building job resolves its sibling repos through
+# prepare-checkouts.sh, which reads MANIFEST.md's "Effective pins" --
+# the same command a clean local reproduction runs, so CI and a local
+# run cannot test different commits. All of them build with the classic
+# builder: GH-hosted runners default to the docker-container buildx
+# driver and Compose's Bake path, which enforce filesystem-read
+# entitlements for Foundry's out-of-context Dockerfiles (helix-foundry/
+# images/* building contexts in helix-kernel/helix-cortex) -- the
+# real-model-eval job of run 41101954690 failed exactly there.
+env:
+  COMPOSE_BAKE: "false"
+
 jobs:
-  # The shared cross-repo acceptance gate for workflow 1 -- owned here,
-  # not duplicated into helix-foundry/helix-kernel/helix-cortex's own CI.
-  # Neither helix-foundry nor this repo had any CI at all before this;
-  # a local "it passed on my machine" run is not evidence by itself.
-  # Builds the real Foundry Compose stack (PostgreSQL + the kernel
-  # extension + the cortex worker) from the exact sibling commits
-  # MANIFEST.md pins and runs the full 5-scenario acceptance.sh against
-  # it -- not a smoke test, and nothing here is allowed to skip.
-  #
-  # Pinned to the SAME helix-foundry/helix-cortex commits as
-  # workflow2-acceptance below (see MANIFEST.md): both workflows must be
-  # proven against one real stack, not two different ones -- a green
-  # workflow-1 check against an older manifest would not show that the
-  # Workflow 2 changes (pgvector, new roles/services, the chunk-text
-  # input extractor) left workflow 1 intact.
+  # Fast, deterministic, no Docker: the scorer's evidence contract
+  # (empty/missing/malformed/mismatched inputs must fail; hand-computed
+  # metrics must match) through its real CLI, plus shell syntax.
+  offline-regressions:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 -m unittest -v eval/test_score.py
+      - run: for f in prepare-checkouts.sh workflow-1/*.sh workflow-2/*.sh eval/*.sh; do sh -n "$f"; done
+
+  # The shared cross-repo acceptance gate for workflow 1, against the
+  # same pinned stack as everything below.
   workflow1-acceptance:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
           path: helix-labs
-      - name: Check out pinned sibling repos (see helix-labs/MANIFEST.md)
-        uses: actions/checkout@v4
-        with:
-          repository: Pg-Helix/helix-foundry
-          ref: 762407f8ac4b26c4c22fde4238cc1f55e62974ea
-          path: helix-foundry
-      - uses: actions/checkout@v4
-        with:
-          repository: Pg-Helix/helix-kernel
-          ref: 0f5bec3ee5f5f9506d0be87c1bec856836d10080
-          path: helix-kernel
-      - uses: actions/checkout@v4
-        with:
-          repository: Pg-Helix/helix-cortex
-          ref: 74213448fcd5d8521263098b6bd65db7885041ef
-          path: helix-cortex
-      - name: Use the classic (non-sandboxed) buildx driver
-        # GH-hosted runners default to the "docker-container" buildx
-        # driver, which runs BuildKit in its own container and enforces
-        # filesystem-read entitlements for anything outside a build's
-        # own context -- exactly how helix-foundry's docker-compose.yml
-        # is written (build context in helix-kernel/helix-cortex,
-        # Dockerfile living in helix-foundry's images/ dir). The
-        # classic "docker" driver builds inside the host daemon with no
-        # such sandbox, matching local dev where this already works.
-        run: docker buildx use default
-      - name: Run the full workflow-1 acceptance gate
-        env:
-          COMPOSE_BAKE: "false"
-        run: cd helix-labs/workflow-1 && sh acceptance.sh
+      - run: sh helix-labs/prepare-checkouts.sh
+      - run: docker buildx use default
+      - run: cd helix-labs/workflow-1 && sh acceptance.sh
 
-  # The Workflow 2 acceptance gate (ADR-0007): authorized ingestion,
-  # hybrid retrieval, extractive answers with citations, and revocable
-  # access, against the real cortex-api/chunk-worker binaries and a real
-  # PostgreSQL+pgvector. Same sibling commits as workflow1-acceptance
-  # above (see MANIFEST.md) -- one real stack, both gates. Mock
-  # embeddings throughout (the default profile) -- the real-model-eval
-  # job below is what exercises the real embedding provider.
+  # Workflow 2 (ADR-0007): authorized ingestion, hybrid retrieval,
+  # extractive answers with citations, revocable access. Mock embeddings.
   workflow2-acceptance:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
           path: helix-labs
-      - name: Check out pinned sibling repos (see helix-labs/MANIFEST.md)
-        uses: actions/checkout@v4
-        with:
-          repository: Pg-Helix/helix-foundry
-          ref: 762407f8ac4b26c4c22fde4238cc1f55e62974ea
-          path: helix-foundry
-      - uses: actions/checkout@v4
-        with:
-          repository: Pg-Helix/helix-kernel
-          ref: 0f5bec3ee5f5f9506d0be87c1bec856836d10080
-          path: helix-kernel
-      - uses: actions/checkout@v4
-        with:
-          repository: Pg-Helix/helix-cortex
-          ref: 74213448fcd5d8521263098b6bd65db7885041ef
-          path: helix-cortex
-      - name: Use the classic (non-sandboxed) buildx driver
-        run: docker buildx use default
-      - name: Run the full workflow-2 acceptance gate
+      - run: sh helix-labs/prepare-checkouts.sh
+      - run: docker buildx use default
+      - run: cd helix-labs/workflow-2 && sh acceptance.sh
         env:
-          COMPOSE_BAKE: "false"
-        run: cd helix-labs/workflow-2 && sh acceptance.sh
+          WF2_ARTIFACT_DIR: ${{ github.workspace }}/wf2-logs
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: workflow2-logs
+          path: wf2-logs
+          if-no-files-found: ignore
 
-  # Embedding-binding version-change properties (backfill idempotency,
-  # binding isolation, dimension-change triggering, a cutover's clean
-  # "not yet ready" gap) -- mock bindings throughout (deterministic,
-  # fast), same sibling commits as the gates above.
+  # Embedding-binding version-change properties (mock bindings).
   version-change:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
           path: helix-labs
-      - name: Check out pinned sibling repos (see helix-labs/MANIFEST.md)
-        uses: actions/checkout@v4
-        with:
-          repository: Pg-Helix/helix-foundry
-          ref: 762407f8ac4b26c4c22fde4238cc1f55e62974ea
-          path: helix-foundry
-      - uses: actions/checkout@v4
-        with:
-          repository: Pg-Helix/helix-kernel
-          ref: 0f5bec3ee5f5f9506d0be87c1bec856836d10080
-          path: helix-kernel
-      - uses: actions/checkout@v4
-        with:
-          repository: Pg-Helix/helix-cortex
-          ref: 74213448fcd5d8521263098b6bd65db7885041ef
-          path: helix-cortex
-      - name: Use the classic (non-sandboxed) buildx driver
-        run: docker buildx use default
-      - name: Run the embedding-binding version-change gate
+      - run: sh helix-labs/prepare-checkouts.sh
+      - run: docker buildx use default
+      - run: cd helix-labs/workflow-2 && sh version-change.sh
         env:
-          COMPOSE_BAKE: "false"
-        run: cd helix-labs/workflow-2 && sh version-change.sh
+          WF2_ARTIFACT_DIR: ${{ github.workspace }}/wf2-logs
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: version-change-logs
+          path: wf2-logs
+          if-no-files-found: ignore
 
-  # The real, local CPU embedding profile's evaluation (this milestone):
-  # downloads and runs a real ~274MB model via Ollama -- kept in its own
-  # job, separate from the fast mock gates above, but REQUIRED: never
-  # allowed to skip. A missing/failed download or a crashed run fails
-  # this job; score.py additionally fails the job on any unauthorized
-  # disclosure or a missed pre-registered acceptance target
-  # (helix-labs/eval/PROTOCOL.md) -- no threshold here is adjusted after
-  # the fact to manufacture a pass.
+  # PROTOCOL.md's evaluation: mock (plumbing baseline), real
+  # (nomic-embed-text:v1.5 via Ollama, reranker on) and real-norerank
+  # (Decision D's alternative), each on its own fresh stack, then one
+  # scoring step. Required, never skipped. score.py exits 2 when evidence
+  # is missing/invalid (harness problem) and 1 when the evidence is valid
+  # but an acceptance target or security gate is missed (product result);
+  # either fails this job. Raw results and the report are uploaded.
   real-model-eval:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
           path: helix-labs
-      - name: Check out pinned sibling repos (see helix-labs/MANIFEST.md)
-        uses: actions/checkout@v4
-        with:
-          repository: Pg-Helix/helix-foundry
-          ref: 762407f8ac4b26c4c22fde4238cc1f55e62974ea
-          path: helix-foundry
-      - uses: actions/checkout@v4
-        with:
-          repository: Pg-Helix/helix-kernel
-          ref: 0f5bec3ee5f5f9506d0be87c1bec856836d10080
-          path: helix-kernel
-      - uses: actions/checkout@v4
-        with:
-          repository: Pg-Helix/helix-cortex
-          ref: 74213448fcd5d8521263098b6bd65db7885041ef
-          path: helix-cortex
-      - name: Use the classic (non-sandboxed) buildx driver
-        run: docker buildx use default
-      - name: Run the mock pass (plumbing baseline)
+      - run: sh helix-labs/prepare-checkouts.sh
+      - run: docker buildx use default
+      - name: Mock pass (plumbing baseline)
         run: cd helix-labs/eval && sh run-eval.sh mock
-      - name: Run the real pass (nomic-embed-text via Ollama)
+        env:
+          WF2_ARTIFACT_DIR: ${{ github.workspace }}/wf2-logs/mock
+      - name: Real pass (nomic-embed-text via Ollama, reranker on)
         run: cd helix-labs/eval && sh run-eval.sh real
-      - name: Score both passes against PROTOCOL.md's acceptance targets
-        run: cd helix-labs/eval && python3 score.py
-      - name: Upload the full report
+        env:
+          WF2_ARTIFACT_DIR: ${{ github.workspace }}/wf2-logs/real
+      - name: Real pass, reranker off (Decision D alternative)
+        run: cd helix-labs/eval && sh run-eval.sh real-norerank
+        env:
+          WF2_ARTIFACT_DIR: ${{ github.workspace }}/wf2-logs/real-norerank
+      - name: Score against PROTOCOL.md
+        run: |
+          cd helix-labs/eval
+          set +e
+          python3 score.py --report "$GITHUB_WORKSPACE/eval-out/report.json" | tee "$GITHUB_WORKSPACE/eval-out-summary.txt"
+          code=${PIPESTATUS[0]}
+          { echo '```'; cat "$GITHUB_WORKSPACE/eval-out-summary.txt"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          exit "$code"
+        shell: bash
+      - uses: actions/upload-artifact@v4
         if: always()
-        uses: actions/upload-artifact@v4
         with:
-          name: eval-report
-          path: helix-labs/eval/report.json
+          name: eval-evidence
+          path: |
+            eval-out
+            helix-labs/eval/results-*
+            wf2-logs
+          if-no-files-found: warn
