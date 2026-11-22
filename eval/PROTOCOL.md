@@ -203,3 +203,38 @@ definition, threshold, label, split or corpus file changed;
   0.091/0.803/0.924 quoted in helix-labs PR #6 are held-out Recall@5
   over all 11 ranked queries (FTS / final with reranker / hybrid), not
   the paraphrase subset.
+
+## Revision 2026-11-22: answer behavior
+
+The v1 corpus, queries, labels, splits and every threshold above are unchanged.
+
+- **no_answer gate.** The open "confidently" ambiguity noted above is resolved by a
+  product decision, helix-atlas ADR-0008. `/answers` now has an explicit decline: HTTP
+  200, `answer_method` "extractive", `answer` "" and `citations` []. The gate (≥3 of
+  4) counts only that exact decline. Any non-empty answer, and any violation of the
+  array contract (missing or null `citations`), counts as asserting an answer. The
+  historical reading (first citation not labeled for another query; no citation means
+  abstained) is still reported as `historical_first_citation_correct`, but it no longer
+  gates. Deleting the citations from unsupported prose used to pass it.
+- **Answer contract, every authorized `/answers` response.** A non-empty answer must be
+  exactly its cited passages' text (Cortex's extractive join). Every citation, not only
+  the first, must name an ingested passage of the requested collection with the
+  matching `source_id` and `source_digest`. A violation fails the pass's contract gate
+  (exit 1). A transport failure, non-200 status or malformed JSON is invalid evidence
+  (exit 2).
+- **Positive controls.** A1, A4, B1 and B2 must each answer with their labeled passage
+  and cite it. All four did on the baseline before the evidence rule existed, so a rule
+  that declines too much fails here.
+- **Outcome report.** Every authorized v1 query and every `answerability.jsonl` row is
+  asked on `/answers`. Each result is classified as a correct cited answer, wrong answer,
+  false decline or correct decline, with denominators per group: v1 dev, v1 held-out,
+  answerability dev, answerability challenge, positive controls and no_answer.
+  `answerability.jsonl` is new and hash-pinned. Its dev rows (with the v1 dev split)
+  were used to choose the evidence rule. Its challenge rows had expected outcomes and
+  passage references fixed (2026-11-22T15:09Z) before the rule existed, and they were
+  never used to choose it. Only the controls and no_answer gate; the rest is reported.
+  Row N5 asks an authorized collection with no passages.
+- **Evidence checks added.** `run.json` must be a JSON object with 40-hex revisions and
+  a boolean dirty flag, and its executed-request count must equal the request plan. C3's
+  responses are still validated although its defective label keeps it out of the
+  metrics.

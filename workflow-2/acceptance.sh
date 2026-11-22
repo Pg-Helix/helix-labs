@@ -333,7 +333,13 @@ scenario_result 6
 echo "--- scenario 7: revocation ---"
 code=$(api POST /answers "$BOB_TOKEN" "{\"tenant\":\"acme\",\"collection_id\":\"$COL1\",\"query\":\"paid leave\"}")
 expect_code "bob gets a cited answer before revocation" 200 "$code"
-BOB_CITED_CHUNK=$(json_field citations.0.chunk_id)
+BOB_CITED_CHUNK=$(json_field citations.0.chunk_id 2>/dev/null || true)
+if [ -z "$BOB_CITED_CHUNK" ]; then
+    echo "FAIL: bob's pre-revocation answer carried no citation -- the revocation checks below would be vacuous"
+    fail=$((fail + 1))
+fi
+code=$(api GET "/evidence/$BOB_CITED_CHUNK?tenant=acme" "$BOB_TOKEN")
+expect_code "bob's citation resolves before revocation" 200 "$code"
 
 code=$(api DELETE "/collections/$COL1/permissions/bob" "$ALICE_TOKEN")
 expect_code "revoke bob" 204 "$code"
@@ -433,6 +439,41 @@ code=$(api POST "/collections/$COL1/documents" "$ALICE_TOKEN" "{\"tenant\":\"acm
 expect_code "oversized document rejected" 400 "$code"
 echo "ok: remote URL ingestion is unavailable -- no such endpoint exists in this milestone (deliberate scope limit, ADR-0007)"
 scenario_result 10
+
+# --- Scenario 11: answer or decline on the wire (helix-atlas ADR-0008) ---
+echo "--- scenario 11: answer/decline wire contract ---"
+code=$(api POST /collections "$ALICE_TOKEN" '{"tenant":"acme","name":"wf2-empty"}')
+expect_code "create an empty collection" 201 "$code"
+COL_EMPTY=$(json_field id)
+code=$(api POST /answers "$ALICE_TOKEN" "{\"tenant\":\"acme\",\"collection_id\":\"$COL_EMPTY\",\"query\":\"paid leave\"}")
+expect_code "authorized question on an empty collection is processed" 200 "$code"
+if python3 -c 'import json,sys; sys.exit(json.load(open(sys.argv[1])) != {"answer": "", "answer_method": "extractive", "citations": []})' "$WF2_BODY"; then
+    echo "ok: empty collection declines with exactly {\"answer\":\"\",\"answer_method\":\"extractive\",\"citations\":[]}"
+else
+    echo "FAIL: empty-collection answer is not the documented decline body: $(cat "$WF2_BODY")"
+    fail=$((fail + 1))
+fi
+code=$(api POST /answers "$BOB_TOKEN" "{\"tenant\":\"acme\",\"collection_id\":\"$COL_EMPTY\",\"query\":\"paid leave\"}")
+expect_code "ungranted caller is denied (403), not given a decline" 403 "$code"
+code=$(api POST /answers "$ALICE_TOKEN" "{\"tenant\":\"acme\",\"collection_id\":\"$COL1\",\"query\":\"paid leave\"}")
+expect_code "authorized answer request" 200 "$code"
+if python3 - "$WF2_BODY" <<'EOF'
+import json, sys
+b = json.load(open(sys.argv[1]))
+cits = b["citations"]
+assert b["answer_method"] == "extractive" and isinstance(cits, list), b
+assert (b["answer"] == "") == (cits == []), "answer text and citations must agree"
+for c in cits:
+    assert all(isinstance(c.get(k), str) and c[k] for k in ("chunk_id", "source_id", "source_digest")), c
+    assert c["chunk_id"].split("|")[:2] == [c["source_id"], c["source_digest"]], c
+EOF
+then
+    echo "ok: answer response satisfies the AnswerResponse contract"
+else
+    echo "FAIL: answer response violates the AnswerResponse contract: $(cat "$WF2_BODY")"
+    fail=$((fail + 1))
+fi
+scenario_result 11
 
 if [ "$fail" -eq 0 ]; then
     echo "workflow-2 acceptance: ALL SCENARIOS PASS"

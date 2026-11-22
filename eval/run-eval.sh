@@ -19,7 +19,8 @@
 #                     inventory passage-level relevance is resolved against
 #   <query>__<stage>.json/.code   one response body + HTTP status per request
 #                     (score.py plan lists them: all four ranking stages for
-#                     every query; /answers for no_answer; unauthorized
+#                     every query; /answers for every authorized v1 query
+#                     and every answerability.jsonl row; unauthorized
 #                     queries as bob at all four stages + /answers, plus an
 #                     authorized alice control at all four stages)
 # The X-Eval-Stage header (dense-only, fts-only, hybrid-prererank) is
@@ -85,7 +86,8 @@ meta = {
     "finished_at": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ") if completed == "true" else None,
     "requests": int(requests),
     "inputs": {"queries_sha256": hashlib.sha256(pathlib.Path(eval_dir, "queries.jsonl").read_bytes()).hexdigest(),
-               "corpus_sha256": hashlib.sha256(b"".join(p.read_bytes() for p in corpus)).hexdigest()},
+               "corpus_sha256": hashlib.sha256(b"".join(p.read_bytes() for p in corpus)).hexdigest(),
+               "answerability_sha256": hashlib.sha256(pathlib.Path(eval_dir, "answerability.jsonl").read_bytes()).hexdigest()},
     "revisions": revs, "cortex_go_mod": deps,
     "provider": json.load(open(provider)),
     "db_binding": json.loads(os.environ["BINDING"]),
@@ -116,8 +118,12 @@ COL_PUBLIC=$(json_field id)
 code=$(api POST /collections "$ALICE_TOKEN" '{"tenant":"acme","name":"eval-restricted"}')
 [ "$code" = "201" ] || { echo "run-eval: create eval-restricted failed (http $code)" >&2; exit 1; }
 COL_RESTRICTED=$(json_field id)
-# Alice creates (owns) both; bob holds NO grant on eval-restricted -- he
-# is the unauthorized principal for the F* queries.
+code=$(api POST /collections "$ALICE_TOKEN" '{"tenant":"acme","name":"eval-empty"}')
+[ "$code" = "201" ] || { echo "run-eval: create eval-empty failed (http $code)" >&2; exit 1; }
+COL_EMPTY=$(json_field id)
+# Alice creates (owns) all three; bob holds NO grant on eval-restricted --
+# he is the unauthorized principal for the F* queries. eval-empty stays
+# empty: an authorized collection with no eligible passage (must decline).
 
 echo "eval($PROFILE): ingesting corpus"
 : > "$OUT_DIR/doc_ids.tsv"
@@ -136,7 +142,7 @@ BINDING=$(pg_admin -c "SELECT coalesce(json_agg(json_build_object('model_id', mo
 export BINDING
 
 echo "eval($PROFILE): running queries"
-python3 "$EVAL_DIR/score.py" plan "$COL_PUBLIC" "$COL_RESTRICTED" > "$WF2_TMP/plan.tsv"
+python3 "$EVAL_DIR/score.py" plan "$COL_PUBLIC" "$COL_RESTRICTED" "$COL_EMPTY" > "$WF2_TMP/plan.tsv"
 TAB=$(printf '\t')
 n=0
 while IFS="$TAB" read -r name endpoint principal stage body; do

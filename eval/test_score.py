@@ -21,6 +21,8 @@ SCORE = EVAL / "score.py"
 STAGES = ["fts-only", "dense-only", "hybrid-prererank", "final"]
 QUERIES = [json.loads(l) for l in (EVAL / "queries.jsonl").read_text().splitlines() if l.strip()]
 Q = {q["id"]: q for q in QUERIES}
+ANSWERABILITY = [json.loads(l) for l in (EVAL / "answerability.jsonl").read_text().splitlines() if l.strip()]
+DECLINE = {"answer": "", "answer_method": "extractive", "citations": []}
 CORPUS = sorted((EVAL / "corpus").rglob("*.md"))
 REVS = {r: {"commit": "0" * 40, "dirty": False} for r in ("helix-labs", "helix-foundry", "helix-kernel", "helix-cortex")}
 REAL = {"provider": "openai-compat", "wire_model": "nomic-embed-text:v1.5", "model_id": "nomic-embed-text",
@@ -59,13 +61,15 @@ class Pass:
                 if st == "fts-only" and q["category"] == "paraphrase":
                     docs = []  # a legitimate empty FTS result
                 files[f"{q['id']}__{st}"] = (200, self.results(docs))
-            if q["category"] == "no_answer":
-                files[f"{q['id']}__answer"] = (200, {"answer": "", "answer_method": "extractive", "citations": None})
+            files[f"{q['id']}__answer"] = (200, self.answer(list(dict.fromkeys(rel))))
+        for a in ANSWERABILITY:
+            files[f"{a['id']}__answer"] = (200, self.answer(list(dict.fromkeys(i["document"] for i in a["relevant"]))))
         self.responses = files
         self.meta = {
             "schema": 1, "profile": profile, "completed": True,
             "inputs": {"queries_sha256": sha((EVAL / "queries.jsonl").read_bytes()),
-                       "corpus_sha256": sha(b"".join(p.read_bytes() for p in CORPUS))},
+                       "corpus_sha256": sha(b"".join(p.read_bytes() for p in CORPUS)),
+                       "answerability_sha256": sha((EVAL / "answerability.jsonl").read_bytes())},
             "revisions": json.loads(json.dumps(REVS)),
             "provider": self.provider(),
         }
@@ -79,12 +83,24 @@ class Pass:
                 "model_artifact": {"weights_digest": DIGEST if self.profile != "mock" else None,
                                    "pinned_digest": DIGEST if self.profile != "mock" else None}}
 
+    def answer(self, docs):
+        """The extractive answer over docs' passages (decline when none)."""
+        if not docs:
+            return dict(DECLINE, citations=[])
+        return {"answer": " ... ".join(self.text[n].strip() for n in docs[:3]), "answer_method": "extractive",
+                "citations": [self.citation(n) for n in docs[:3]]}
+
+    def citation(self, n):
+        return {"chunk_id": self.chunk[n], "source_id": self.doc[n], "source_digest": self.chunk[n].split("|")[1]}
+
     def results(self, docs):
         return {"results": [{"chunk_id": self.chunk[n], "document_id": self.doc[n], "score": 1.0 / (i + 1),
                              "snippet": self.text[n][:200]} for i, n in enumerate(docs)] or None}
 
     def write(self):
         self.dir.mkdir(parents=True, exist_ok=True)
+        if isinstance(self.meta, dict) and "requests" not in self.meta:
+            self.meta["requests"] = len(self.responses)
         (self.dir / "run.json").write_text(json.dumps(self.meta))
         (self.dir / "doc_ids.tsv").write_text("".join(f"{n}\t{self.doc[n]}\t{self.coll[n]}\n" for n in self.doc))
         (self.dir / "chunks.jsonl").write_text("".join(
@@ -231,6 +247,7 @@ class ScoreCLI(unittest.TestCase):
         inputs = self.tmp / "inputs"
         shutil.copytree(EVAL / "corpus", inputs / "corpus")
         shutil.copy(EVAL / "queries.jsonl", inputs)
+        shutil.copy(EVAL / "answerability.jsonl", inputs)
         shutil.copy(EVAL / "HASHES.txt", inputs)
         with open(inputs / "corpus" / "parking-policy.md", "a") as f:
             f.write("tampered\n")
@@ -282,26 +299,148 @@ class ScoreCLI(unittest.TestCase):
 
     def test_no_answer_asserting_labeled_content_fails(self):
         for qid in ("E1", "E2"):
-            self.real.responses[f"{qid}__answer"] = (200, {
-                "answer": "x", "answer_method": "extractive",
-                "citations": [{"chunk_id": self.real.chunk["paid-leave-policy.md"], "source_id": "s", "source_digest": "d"}]})
+            self.real.responses[f"{qid}__answer"] = (200, self.real.answer(["paid-leave-policy.md"]))
         self.assertEqual(self.run_cli(), 1, self.out)
-        self.assertIn("FAIL: no_answer correctness", self.out)
+        self.assertIn("FAIL: no_answer: explicit decline", self.out)
         na = self.report["passes"]["real"]["no_answer"]
-        self.assertEqual((na["correct"], na["n"]), (2, 4))
+        self.assertEqual((na["correct"], na["historical_first_citation_correct"], na["n"]), (2, 2, 4))
         self.assertIn("A1", na["queries"]["E1"]["top_citation_labeled_for"])
+        self.assertEqual(na["queries"]["E1"]["outcome"], "wrong_answer")
+
+    # --- answer behavior (helix-atlas ADR-0008) ---
+
+    def unsupported_prose(self, pass_, qid):
+        """The CI artifact's shape for a no_answer reply: ~750 chars of
+        unrelated passages with three citations."""
+        return pass_.answer(["remote-work-policy.md", "paid-leave-policy.md", "onboarding-checklist.md"])
+
+    def test_unsupported_prose_without_citations_is_not_a_decline(self):
+        # Regression (audit, CI artifact 14701162129): keeping the
+        # unsupported prose and deleting its citations used to turn the
+        # no_answer gate from 0/4 into 4/4. Deleted, null or missing
+        # citations: none is a decline.
+        for i, qid in enumerate(("E1", "E2", "E3", "E4")):
+            body = self.unsupported_prose(self.real, qid)
+            if i == 0:
+                body["citations"] = []
+            elif i == 1:
+                body["citations"] = None
+            elif i == 2:
+                del body["citations"]
+            else:
+                body["citations"] = []
+            self.real.responses[f"{qid}__answer"] = (200, body)
+        self.assertEqual(self.run_cli(), 1, self.out)
+        na = self.report["passes"]["real"]["no_answer"]
+        self.assertEqual(na["correct"], 0)
+        self.assertEqual({q: e["outcome"] for q, e in na["queries"].items()}, dict.fromkeys(("E1", "E2", "E3", "E4"), "wrong_answer"))
+        # The historical first-citation reading stays visible -- and is
+        # exactly what was fooled: no citation counted as abstaining.
+        self.assertEqual(na["historical_first_citation_correct"], 4)
+        v = self.report["passes"]["real"]["answers"]["rows"]
+        self.assertIn("non-empty answer without citations", v["E1"]["violations"])
+        self.assertIn("citations is null (contract: always an array)", v["E2"]["violations"])
+        self.assertIn("citations missing (contract: always an array)", v["E3"]["violations"])
+        self.assertIn("FAIL: real: every authorized /answers response satisfies the AnswerResponse contract", self.out)
+
+    def test_null_citations_on_an_empty_answer_violate_the_array_contract(self):
+        self.real.responses["E1__answer"] = (200, dict(DECLINE, citations=None))
+        self.assertEqual(self.run_cli(), 1, self.out)
+        self.assertEqual(self.report["passes"]["real"]["no_answer"]["queries"]["E1"]["outcome"], "wrong_answer")
+
+    def test_unsupported_cited_answers_fail_on_the_real_artifact_shape(self):
+        for qid in ("E1", "E2", "E3", "E4"):
+            self.real.responses[f"{qid}__answer"] = (200, self.unsupported_prose(self.real, qid))
+        self.assertEqual(self.run_cli(), 1, self.out)
+        na = self.report["passes"]["real"]["no_answer"]
+        self.assertEqual((na["correct"], na["historical_first_citation_correct"]), (0, 0))
+
+    def test_declining_everything_fails_the_positive_controls(self):
+        for name in list(self.real.responses):
+            if name.endswith("__answer") and not name.startswith("F"):
+                self.real.responses[name] = (200, dict(DECLINE, citations=[]))
+        self.assertEqual(self.run_cli(), 1, self.out)
+        self.assertIn("FAIL: answer positive controls A1/A4/B1/B2", self.out)
+        self.assertIn("PASS: no_answer: explicit decline", self.out)
+        g = self.report["passes"]["real"]["answers"]["groups"]["positive controls"]
+        self.assertEqual((g["correct_answer"], g["false_decline"], g["n"]), (0, 4, 4))
+
+    def test_valid_answers_are_classified_with_denominators(self):
+        self.assertEqual(self.run_cli(), 0, self.out)
+        g = self.report["passes"]["real"]["answers"]["groups"]
+        self.assertEqual(g["positive controls"], {"n": 4, "correct_answer": 4, "wrong_answer": 0, "false_decline": 0,
+                                                  "correct_decline": 0, "undefined": 0, "contract_violations": 0})
+        self.assertEqual((g["answerability challenge"]["correct_answer"], g["answerability challenge"]["correct_decline"]), (5, 5))
+        self.assertEqual(g["answerability dev"]["correct_decline"], 5)  # N5: authorized empty collection
+        self.assertEqual(g["v1 dev"]["undefined"], 1)  # C3 label defect: validated, not counted
+
+    def test_second_citation_is_checked(self):
+        body = self.real.answer(["paid-leave-policy.md", "sick-leave-policy.md"])
+        body["citations"][1]["source_digest"] = "0" * 64
+        self.real.responses["A1__answer"] = (200, body)
+        self.assertEqual(self.run_cli(), 1, self.out)
+        row = self.report["passes"]["real"]["answers"]["rows"]["A1"]
+        self.assertEqual(row["outcome"], "wrong_answer")
+        self.assertIn("citation 1 source_digest does not match its passage", row["violations"])
+
+    def test_answer_text_must_be_the_cited_passages(self):
+        body = self.real.answer(["paid-leave-policy.md"])
+        body["answer"] += " Also, everyone gets a car."
+        self.real.responses["A1__answer"] = (200, body)
+        self.assertEqual(self.run_cli(), 1, self.out)
+        self.assertIn("answer text is not the cited passages' own text", self.report["passes"]["real"]["answers"]["rows"]["A1"]["violations"])
+
+    def test_answer_citing_the_wrong_passage_is_a_wrong_answer(self):
+        self.real.responses["B1__answer"] = (200, self.real.answer(["parking-policy.md"]))
+        self.assertEqual(self.run_cli(), 1, self.out)
+        self.assertEqual(self.report["passes"]["real"]["answers"]["rows"]["B1"]["outcome"], "wrong_answer")
+
+    def test_empty_collection_answer_must_decline(self):
+        self.real.responses["N5__answer"] = (200, self.real.answer(["paid-leave-policy.md"]))
+        self.assertEqual(self.run_cli(), 1, self.out)
+        self.assertIn("cites a public passage for a question on the empty collection", str(self.report["passes"]["real"]["answers"]["rows"]["N5"]))
+
+    def test_answer_http_error_is_invalid_evidence(self):
+        self.real.responses["X1__answer"] = (500, {"code": "internal", "message": "x", "trace_id": "t"})
+        self.assertFails(None, "real/X1/answer: unexpected HTTP status 500")
+
+    # --- evidence gaps from the 2026-11-22 audit ---
+
+    def test_non_object_run_json_fails(self):
+        for meta in (None, [], "x"):
+            self.real.meta = meta
+            self.assertFails(None, "real: run.json is not a JSON object")
+
+    def test_request_count_must_match_the_plan(self):
+        self.real.meta["requests"] = 0
+        self.assertFails(None, "real: run.json records 0 executed requests; the request plan has")
+
+    def test_invalid_revision_string_fails(self):
+        for r in ("mock", "real"):
+            getattr(self, r).meta["revisions"]["helix-cortex"]["commit"] = "HEAD"
+        self.assertFails(None, "lacks valid git revisions")
+
+    def test_c3_evidence_validated_although_its_label_is_excluded(self):
+        self.real.responses["C3__final"] = (500, {"code": "internal", "message": "x", "trace_id": "t"})
+        self.real.responses["C3__dense-only"] = (200, "{not json")
+        self.assertFails(None, "real/C3/final: unexpected HTTP status 500", "real/C3/dense-only: malformed JSON")
+        self.real.responses["C3__final"] = self.real.responses["C3__dense-only"] = (200, self.real.results([]))
+        self.real.responses["C3__answer"] = (200, "{not json")
+        self.assertFails(None, "real/C3/answer: malformed JSON")
 
 
 class Plan(unittest.TestCase):
     def test_plan_matches_required_files_without_empty_fields(self):
-        out = subprocess.run([sys.executable, str(SCORE), "plan", "PUB", "RES"], capture_output=True, text=True, check=True).stdout
+        out = subprocess.run([sys.executable, str(SCORE), "plan", "PUB", "RES", "EMPTY"], capture_output=True, text=True, check=True).stdout
         rows = [l.split("\t") for l in out.splitlines()]
         self.assertEqual(len(rows), len(Pass(tempfile.gettempdir(), "mock").responses))
         for r in rows:
             self.assertEqual(len(r), 5, r)
             self.assertTrue(all(r), r)  # IFS=<tab> read collapses empty fields
             body = json.loads(r[4])
-            self.assertEqual(body["collection_id"], "RES" if Q[r[0].split("__")[0]]["collection"] == "restricted" else "PUB")
+            q = Q.get(r[0].split("__")[0]) or next(a for a in ANSWERABILITY if a["id"] == r[0].split("__")[0])
+            self.assertEqual(body["collection_id"], {"restricted": "RES", "empty": "EMPTY", "public": "PUB"}[q["collection"]])
+        self.assertEqual(sum(r[1] == "/answers" for r in rows), 31 + 3 + len(ANSWERABILITY))
 
 
 if __name__ == "__main__":

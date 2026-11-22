@@ -11,6 +11,15 @@ list is a measurement; a missing file, malformed JSON, an unexpected
 status or an unexecuted request is not, and is reported by
 pass/query/stage.
 
+Answers (POST /answers, every authorized question) are checked against
+the AnswerResponse contract (helix-atlas ADR-0008): a decline is exactly
+HTTP 200, answer_method "extractive", answer "" and citations [];
+missing/null citations violate the array contract. A non-empty answer
+must be the cited passages' own text and every citation (not only the
+first) must name an ingested passage of the asked collection with the
+matching source_id and source_digest. Each answer is then classified as
+correct cited answer / wrong answer / false decline / correct decline.
+
 Relevance is passage-level (PROTOCOL.md "What relevant means"): a
 returned chunk is relevant iff it belongs to a labeled document AND its
 full text (from the chunk inventory, not the 200-char search snippet)
@@ -38,6 +47,11 @@ RANKED = ["exact_term", "paraphrase", "distractor", "multi_passage"]
 PARAPHRASE_MIN_GAIN = 0.15
 EXACT_TERM_MAX_REGRESSION = 0.10
 NO_ANSWER_MIN_CORRECT = 3
+# Authorized /answers positive controls: each produced its labeled
+# passage with a citation to the expected source on the unmodified
+# baseline (reviews/2026-11-22 handoff); an evidence rule must keep them.
+ANSWER_CONTROLS = ("A1", "A4", "B1", "B2")
+EXTRACTIVE_SEPARATOR = " ... "  # helix-cortex retrieval.AssembleExtractiveAnswer
 MAX_LISTED = 200
 REAL = {"provider": "openai-compat", "wire_model": "nomic-embed-text:v1.5",
         "model_id": "nomic-embed-text", "model_revision": "v1.5", "dims": 768}
@@ -47,13 +61,12 @@ PROFILES = {
     "real-norerank": {"embed": REAL, "reranker": "disabled"},
 }
 NO_ANSWER_NOTE = (
-    "PROTOCOL.md defines no_answer correctness as: the system's top result (if any) is NOT "
-    "labeled relevant to any other query's answer key. Scored on POST /answers (the endpoint "
-    "that asserts an answer): its first citation, resolved through the chunk inventory against "
-    "every other query's passage labels; an answer with no citation abstained. Open ambiguity: "
-    "the protocol says 'confidently', but the extractive /answers contract exposes no confidence "
-    "or abstention signal, so every cited answer is treated as asserted; /search final top-1 is "
-    "reported alongside for comparison but does not gate.")
+    "Gate: an explicit decline per helix-atlas ADR-0008 -- HTTP 200, answer_method 'extractive', "
+    "answer '' and citations [] -- counts as not asserting an answer; any non-empty or "
+    "contract-violating answer asserts one. The historical PROTOCOL.md reading (first citation "
+    "not labeled relevant to another query; no citation = abstained) is reported alongside as "
+    "historical_first_citation_correct and does not gate: it accepted unsupported prose whose "
+    "citations were removed. /search final top-1 is also reported, not gated.")
 
 
 class Scorer:
@@ -92,14 +105,25 @@ class Scorer:
             self.err("inputs", "queries.jsonl sha256 does not match HASHES.txt")
         if hashes.get("combined-corpus") != combined:
             self.err("inputs", "combined corpus sha256 does not match HASHES.txt")
+        abytes = (self.inputs / "answerability.jsonl").read_bytes()
+        self.input_hashes["answerability_sha256"] = sha256(abytes)
+        if hashes.get("answerability.jsonl") != self.input_hashes["answerability_sha256"]:
+            self.err("inputs", "answerability.jsonl sha256 does not match HASHES.txt")
         self.docs = {p.name: ("restricted" if p.parent.name == "restricted" else "public") for p in corpus}
-        self.queries = {}
-        for n, line in enumerate(qbytes.decode().splitlines(), 1):
-            if line.strip():
-                q = json.loads(line)
-                if q["id"] in self.queries:
-                    self.err("inputs", f"duplicate query id {q['id']}")
-                self.queries[q["id"]] = q
+        self.load_question_sets()
+
+    def load_question_sets(self):
+        """queries.jsonl (v1, ranked + no_answer + unauthorized) and
+        answerability.jsonl (authorized /answers only: dev rows chose the
+        evidence rule, challenge rows were frozen before it existed)."""
+        self.queries, self.answerability = {}, {}
+        for path, into in (("queries.jsonl", self.queries), ("answerability.jsonl", self.answerability)):
+            for line in (self.inputs / path).read_text().splitlines():
+                if line.strip():
+                    q = json.loads(line)
+                    if q["id"] in self.queries or q["id"] in self.answerability:
+                        self.err("inputs", f"duplicate query id {q['id']}")
+                    into[q["id"]] = q
 
     def required_files(self):
         req = {}
@@ -112,8 +136,9 @@ class Scorer:
             else:
                 for st in STAGES:
                     req[f"{qid}__{st}"] = ("alice", st)
-                if q["category"] == "no_answer":
-                    req[f"{qid}__answer"] = ("alice", "answer")
+                req[f"{qid}__answer"] = ("alice", "answer")
+        for aid in self.answerability:
+            req[f"{aid}__answer"] = ("alice", "answer")
         return req
 
     # ---------- one pass ----------
@@ -128,6 +153,8 @@ class Scorer:
         if isinstance(meta, dict):
             self.check_meta(label, meta)
             P["meta"] = meta
+        elif (d / "run.json").exists() and not any(e.startswith(f"{label}: malformed run metadata") for e in self.errors):
+            self.err(label, f"run.json is not a JSON object (got {type(meta).__name__})")
         P["doc_ids"] = self.load_doc_ids(label, d / "doc_ids.tsv")
         P["chunks"] = self.load_chunks(label, d / "chunks.jsonl", P["doc_ids"])
         required = self.required_files()
@@ -181,9 +208,14 @@ class Scorer:
                 if not art.get("weights_digest") or art.get("weights_digest") != art.get("pinned_digest"):
                     self.err(label, f"model artifact digest {art.get('weights_digest')!r} != pinned {art.get('pinned_digest')!r}")
         revs = meta.get("revisions")
-        if not isinstance(revs, dict) or not all(isinstance(revs.get(r), dict) and revs[r].get("commit")
-                                                 for r in ("helix-labs", "helix-foundry", "helix-kernel", "helix-cortex")):
-            self.err(label, "run.json lacks git revisions for helix-labs/foundry/kernel/cortex")
+        if not isinstance(revs, dict) or not all(
+                isinstance(revs.get(r), dict) and isinstance(revs[r].get("commit"), str)
+                and re.fullmatch(r"[0-9a-f]{40}", revs[r]["commit"]) and isinstance(revs[r].get("dirty"), bool)
+                for r in ("helix-labs", "helix-foundry", "helix-kernel", "helix-cortex")):
+            self.err(label, "run.json lacks valid git revisions (40-hex commit + dirty flag) for helix-labs/foundry/kernel/cortex")
+        planned = len(self.required_files())
+        if meta.get("requests") != planned:
+            self.err(label, f"run.json records {meta.get('requests')!r} executed requests; the request plan has {planned}")
 
     def load_doc_ids(self, label, path):
         out, seen_ids = {}, set()
@@ -288,14 +320,14 @@ class Scorer:
     def relevant_sets(self, P, where):
         """qid -> set of chunk ids satisfying the passage-level rule."""
         out = {}
-        for qid, q in self.queries.items():
+        for qid, q in list(self.queries.items()) + list(self.answerability.items()):
             s = set()
             for item in q["relevant"]:
                 hits = {cid for cid, c in P["chunks"].items()
                         if c["doc"] == item["document"] and item["snippet"] in c["text"]}
                 if not hits:
                     msg = f"label {item['document']}/{item['snippet']!r} matches no ingested chunk"
-                    if required(q):
+                    if qid in self.answerability or required(q):
                         self.err(f"{where}/{qid}", msg + " (query feeds a required metric)")
                     else:
                         self.label_defects.add(f"{qid}: {msg}")
@@ -315,6 +347,10 @@ class Scorer:
                 continue
             if not rel[qid]:  # unresolvable label: error (required) or reported defect
                 per_query[qid] = {"split": q["split"], "category": q["category"], "undefined": "label unresolvable", "stages": {}}
+                # Excluded from metrics, not from evidence validation:
+                # its HTTP/JSON responses must still be well-formed.
+                for st in STAGES:
+                    self.search_results(P, f"{qid}__{st}", f"{label}/{qid}/{st}")
                 continue
             per_query[qid] = {"split": q["split"], "category": q["category"], "relevant_total": len(rel[qid]), "stages": {}}
             for st in STAGES:
@@ -334,6 +370,7 @@ class Scorer:
         P["per_query"] = per_query
         P["metrics"] = self.aggregate(per_query)
         P["unauthorized"] = self.score_unauthorized(P)
+        P["answers"] = self.score_answers(P, rel)
         P["no_answer"] = self.score_no_answer(P, rel)
 
     def aggregate(self, per_query):
@@ -403,50 +440,127 @@ class Scorer:
     def errors_for(self, label):
         return sum(1 for e in self.errors if e.startswith((label + ":", label + "/")))
 
+    def check_answer(self, P, qid, coll, where):
+        """Contract check of one authorized /answers response. None means
+        the evidence itself is unusable (error recorded, exit 2); otherwise
+        a dict whose 'violations' are product failures."""
+        r = P["responses"].get(f"{qid}__answer")
+        if r is None:
+            return None
+        if "invalid" in r:
+            self.err(where, r["invalid"]); return None
+        if r["code"] != "200":
+            self.err(where, f"unexpected HTTP status {r['code']} (want 200): {error_code(r['body'])}"); return None
+        b, v = r["body"], []
+        if not isinstance(b, dict):
+            return {"declined": False, "violations": ["body is not a JSON object"], "cited": [], "answer": "", "first": None}
+        ans, cits = b.get("answer"), b.get("citations")
+        if b.get("answer_method") != "extractive":
+            v.append(f"answer_method {b.get('answer_method')!r} is not 'extractive'")
+        if not isinstance(ans, str):
+            v.append("answer is not a string"); ans = ""
+        if "citations" not in b:
+            v.append("citations missing (contract: always an array)")
+        elif cits is None:
+            v.append("citations is null (contract: always an array)")
+        elif not isinstance(cits, list):
+            v.append("citations is not an array")
+        cits = cits if isinstance(cits, list) else []
+        first = cits[0].get("chunk_id") if cits and isinstance(cits[0], dict) else None
+        cited = []
+        for i, c in enumerate(cits):
+            if not (isinstance(c, dict) and all(isinstance(c.get(k), str) and c.get(k) for k in ("chunk_id", "source_id", "source_digest"))):
+                v.append(f"citation {i} lacks chunk_id/source_id/source_digest"); continue
+            ch = P["chunks"].get(c["chunk_id"])
+            if ch is None:
+                v.append(f"citation {i} names {c['chunk_id']!r}, not an ingested passage"); continue
+            if c["source_id"] != P["doc_ids"].get(ch["doc"]):
+                v.append(f"citation {i} source_id does not match its passage's document")
+            if c["source_digest"] != c["chunk_id"].split("|")[1]:
+                v.append(f"citation {i} source_digest does not match its passage")
+            if ch["collection"] != coll:
+                v.append(f"citation {i} cites a {ch['collection']} passage for a question on the {coll} collection")
+            cited.append(c["chunk_id"])
+        if len(set(cited)) != len(cited):
+            v.append("duplicate citations")
+        if ans == "" and cits:
+            v.append("empty answer with citations")
+        if ans != "" and not cits:
+            v.append("non-empty answer without citations")
+        if ans and cited and len(cited) == len(cits) and not extractive_of(ans, [P["chunks"][c]["text"] for c in cited]):
+            v.append("answer text is not the cited passages' own text")
+        return {"declined": not v and ans == "" and cits == [], "violations": v, "cited": cited, "answer": ans, "first": first}
+
+    def score_answers(self, P, rel):
+        """Every authorized /answers response: contract check, then one of
+        correct_answer / wrong_answer / false_decline / correct_decline
+        against its labels (label-defect rows are validated, not counted)."""
+        label, rows = P["label"], {}
+        groups = {}
+        items = [(qid, q, f"v1 {q['split']}", q["category"] != "no_answer") for qid, q in self.queries.items()
+                 if q["category"] != "unauthorized"]
+        items += [(aid, a, f"answerability {a['set']}", a["expect"] == "answer") for aid, a in self.answerability.items()]
+        for qid, q, group, expect_answer in items:
+            chk = self.check_answer(P, qid, q.get("collection", "public"), f"{label}/{qid}/answer")
+            if chk is None:
+                continue
+            if expect_answer and not rel.get(qid):
+                outcome = "undefined"  # label defect (C3): validated above, not counted
+            elif chk["violations"]:
+                outcome = "wrong_answer"
+            elif chk["declined"]:
+                outcome = "false_decline" if expect_answer else "correct_decline"
+            elif not expect_answer:
+                outcome = "wrong_answer"
+            else:
+                hit = set(chk["cited"]) & rel[qid]
+                outcome = "correct_answer" if hit and any(i["snippet"] in chk["answer"] for i in q["relevant"]) else "wrong_answer"
+            rows[qid] = {"group": group, "expect": "answer" if expect_answer else "decline", "outcome": outcome,
+                         "violations": chk["violations"], "answer_chars": len(chk["answer"]),
+                         "cited_docs": [P["chunks"][c]["doc"] for c in chk["cited"]], "first_citation": chk["first"]}
+            for g in [group] + (["positive controls"] if qid in ANSWER_CONTROLS else []) + \
+                     (["no_answer"] if q.get("category") == "no_answer" else []):
+                c = groups.setdefault(g, {"n": 0, "correct_answer": 0, "wrong_answer": 0, "false_decline": 0,
+                                          "correct_decline": 0, "undefined": 0, "contract_violations": 0})
+                c["n"] += 1
+                c[outcome] += 1
+                c["contract_violations"] += bool(chk["violations"])
+        return {"rows": rows, "groups": groups}
+
     def score_no_answer(self, P, rel):
+        """The four no_answer queries: the gate (explicit decline) plus the
+        historical first-citation reading and /search top-1, for comparison."""
         label = P["label"]
-        out = {"queries": {}, "correct": 0, "n": 0}
+        out = {"queries": {}, "correct": 0, "historical_first_citation_correct": 0, "n": 0}
         for qid, q in self.queries.items():
             if q["category"] != "no_answer":
                 continue
             out["n"] += 1
             others = {}
             for oid, s in rel.items():
-                if oid != qid and s:
+                if oid != qid and s and oid in self.queries:
                     for cid in s:
                         others.setdefault(cid, []).append(oid)
             for st in STAGES[:-1]:
                 self.search_results(P, f"{qid}__{st}", f"{label}/{qid}/{st}")
-            where = f"{label}/{qid}/answer"
-            r = P["responses"].get(f"{qid}__answer")
-            if r is None:
+            row = P["answers"]["rows"].get(qid)
+            if row is None:
                 continue
-            if "invalid" in r:
-                self.err(where, r["invalid"]); continue
-            if r["code"] != "200":
-                self.err(where, f"unexpected HTTP status {r['code']} (want 200): {error_code(r['body'])}"); continue
-            b = r["body"]
-            cits = b.get("citations") if isinstance(b, dict) else None
-            if not (isinstance(b, dict) and isinstance(b.get("answer"), str) and b.get("answer_method") == "extractive"
-                    and isinstance(cits, (list, type(None)))
-                    and all(isinstance(c, dict) and isinstance(c.get("chunk_id"), str) for c in cits or [])):
-                self.err(where, "schema: not an extractive AnswerResponse"); continue
-            cits = cits or []
-            if any(c["chunk_id"] not in P["chunks"] for c in cits):
-                self.err(where, "citation references a chunk absent from the inventory"); continue
-            top = cits[0]["chunk_id"] if cits else None
+            top = row["first_citation"] if row["first_citation"] in P["chunks"] else None
             search = self.search_results(P, f"{qid}__final", f"{label}/{qid}/final")
             top_search = search[0][0] if search and search[0] else None
             entry = {
-                "answer_chars": len(b["answer"]), "citations": len(cits),
+                "outcome": row["outcome"], "violations": row["violations"], "answer_chars": row["answer_chars"],
+                "citations": len(row["cited_docs"]), "correct": row["outcome"] == "correct_decline",
+                "historical_first_citation_correct": not others.get(top),
                 "top_citation_doc": P["chunks"][top]["doc"] if top else None,
                 "top_citation_labeled_for": others.get(top, []),
-                "correct": not others.get(top),
                 "search_top1_doc": P["chunks"][top_search]["doc"] if top_search else None,
                 "search_top1_labeled_for": others.get(top_search, []),
             }
             out["queries"][qid] = entry
             out["correct"] += entry["correct"]
+            out["historical_first_citation_correct"] += entry["historical_first_citation_correct"]
         return out
 
     # ---------- gates ----------
@@ -458,6 +572,25 @@ def required(q):
     """Queries feeding a required metric: the held-out targets and Decision D."""
     return (q["split"] == "held_out" and q["category"] in ("paraphrase", "exact_term")) or \
         (q["split"] == "dev" and q["category"] == "paraphrase")
+
+
+def extractive_of(answer, texts):
+    """answer is exactly the passages' stripped texts joined by the
+    extractive separator, the last one possibly cut at the length bound."""
+    rest = answer
+    for i, t in enumerate(texts):
+        t = t.strip()
+        if i:
+            if not rest.startswith(EXTRACTIVE_SEPARATOR):
+                return False
+            rest = rest[len(EXTRACTIVE_SEPARATOR):]
+        if rest.startswith(t):
+            rest = rest[len(t):]
+        elif i == len(texts) - 1 and rest and t.startswith(rest):
+            rest = ""
+        else:
+            return False
+    return rest == ""
 
 
 def sha256(b):
@@ -496,7 +629,8 @@ def run(args):
     s = Scorer(args.inputs)
     report = {"status": "invalid_evidence", "scorer_revision": git_rev(),
               "targets": {"paraphrase_min_gain": PARAPHRASE_MIN_GAIN, "exact_term_max_regression": EXACT_TERM_MAX_REGRESSION,
-                          "no_answer_min_correct": NO_ANSWER_MIN_CORRECT, "unauthorized_disclosures": 0}}
+                          "no_answer_min_correct": NO_ANSWER_MIN_CORRECT, "unauthorized_disclosures": 0,
+                          "answer_positive_controls": list(ANSWER_CONTROLS)}}
     s.load_inputs()
     report["inputs"] = s.input_hashes
     counts = {}
@@ -557,12 +691,22 @@ def run(args):
             s.gate(f"{l}: documented denial (403 forbidden) at every stage", not u["bad_denials"],
                    requests=u["requests"], denials_ok=u["denials_ok"], bad=u["bad_denials"])
         na = served["no_answer"]
-        s.gate("no_answer correctness >= 3 of 4 (POST /answers top citation)", na["correct"] >= NO_ANSWER_MIN_CORRECT,
-               profile=served["label"], correct=na["correct"], n=na["n"], note=NO_ANSWER_NOTE)
+        s.gate("no_answer: explicit decline >= 3 of 4 (POST /answers, ADR-0008 decline body)", na["correct"] >= NO_ANSWER_MIN_CORRECT,
+               profile=served["label"], correct=na["correct"], n=na["n"],
+               historical_first_citation_correct=na["historical_first_citation_correct"], note=NO_ANSWER_NOTE)
+        ctl = served["answers"]["groups"].get("positive controls", {})
+        s.gate(f"answer positive controls {'/'.join(ANSWER_CONTROLS)}: labeled passage answered and cited (all {len(ANSWER_CONTROLS)})",
+               ctl.get("correct_answer") == len(ANSWER_CONTROLS), profile=served["label"],
+               correct=ctl.get("correct_answer"), n=len(ANSWER_CONTROLS),
+               outcomes={q: served["answers"]["rows"][q]["outcome"] for q in ANSWER_CONTROLS if q in served["answers"]["rows"]})
+        for l, P in passes.items():
+            bad = {q: r["violations"] for q, r in P["answers"]["rows"].items() if r["violations"]}
+            s.gate(f"{l}: every authorized /answers response satisfies the AnswerResponse contract", not bad,
+                   requests=len(P["answers"]["rows"]), violations=bad)
 
     for d in sorted(s.label_defects):
         s.warnings.append(f"label defect (excluded, not a required metric; fixing it needs a visible PROTOCOL.md revision): {d}")
-    report["passes"] = {l: {k: P.get(k) for k in ("dir", "ok", "meta", "metrics", "unauthorized", "no_answer", "per_query")}
+    report["passes"] = {l: {k: P.get(k) for k in ("dir", "ok", "meta", "metrics", "unauthorized", "answers", "no_answer", "per_query")}
                         for l, P in passes.items()}
     report["gates"] = s.gates
     report["warnings"] = s.warnings
@@ -611,22 +755,33 @@ def print_summary(r):
             row = m["held_out"][cat]
             print(f"  {cat:<14} n={row['final']['n_scored']}/{row['final']['n']} " + "  ".join(
                 f"{st}={fmt(row[st]['recall_at_5'])}/{fmt(row[st]['ndcg_at_10'])}" for st in STAGES))
+        print(f"=== {l}: /answers outcomes (correct answer / wrong answer / false decline / correct decline, of n) ===")
+        for g, c in sorted(P["answers"]["groups"].items()):
+            print(f"  {g:<24} n={c['n']:<3} correct_answer={c['correct_answer']} wrong_answer={c['wrong_answer']} "
+                  f"false_decline={c['false_decline']} correct_decline={c['correct_decline']}"
+                  + (f" undefined={c['undefined']}" if c["undefined"] else "")
+                  + (f" contract_violations={c['contract_violations']}" if c["contract_violations"] else ""))
     for g in r["gates"]:
-        extra = {k: v for k, v in g.items() if k in ("n", "fts_recall_at_5", "served_final_recall_at_5", "delta", "correct", "requests", "denials_ok")}
+        extra = {k: v for k, v in g.items() if k in ("n", "fts_recall_at_5", "served_final_recall_at_5", "delta", "correct", "requests",
+                                                     "denials_ok", "historical_first_citation_correct", "outcomes")}
         print(f"{'PASS' if g['passed'] else 'FAIL'}: {g['name']} {extra}")
     print(f"status: {r['status']} (exit {r['exit_code']})")
 
 
-def print_plan(public_id, restricted_id, inputs=EVAL_DIR):
+def print_plan(public_id, restricted_id, empty_id, inputs=EVAL_DIR):
     """run-eval.sh's request list, from the same required_files() the
     scorer validates against: name, endpoint, principal, X-Eval-Stage
     header value ("-" = none: the served path), JSON body; tab-separated
     (no empty fields: IFS=<tab> read collapses them)."""
     s = Scorer(inputs)
-    s.queries = {q["id"]: q for q in map(json.loads, filter(str.strip, (Path(inputs) / "queries.jsonl").read_text().splitlines()))}
+    s.load_question_sets()
+    if s.errors:
+        raise SystemExit("; ".join(s.errors))
+    collections = {"public": public_id, "restricted": restricted_id, "empty": empty_id}
     for name, (principal, stage) in s.required_files().items():
-        q = s.queries[name.split("__")[0]]
-        body = {"tenant": "acme", "collection_id": restricted_id if q["collection"] == "restricted" else public_id, "query": q["text"]}
+        qid = name.split("__")[0]
+        q = s.queries.get(qid) or s.answerability[qid]
+        body = {"tenant": "acme", "collection_id": collections[q["collection"]], "query": q["text"]}
         if stage == "answer":
             endpoint, header = "/answers", "-"
         else:
@@ -638,7 +793,7 @@ def print_plan(public_id, restricted_id, inputs=EVAL_DIR):
 def main(argv=None):
     argv = sys.argv[1:] if argv is None else argv
     if argv[:1] == ["plan"]:
-        print_plan(*argv[1:3])
+        print_plan(*argv[1:4])
         return 0
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--mock", default=str(EVAL_DIR / "results-mock"))

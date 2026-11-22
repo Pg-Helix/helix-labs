@@ -19,3 +19,5 @@ queries.jsonl:
 7233fea78e6a4ab155d2ffa131fac0d91aca367736b29b7f77d1d11610a985c9  queries.jsonl
 combined-corpus:
 c566fd929fbbffb3e45020aa2dde58242be37cb71aa3bcd2225211b58c5705fa  -
+answerability.jsonl:
+d88826049270242f998203ff256346d78104e541894692f8dca893ded9d32605  answerability.jsonl
