@@ -81,6 +81,7 @@ class Pass:
         rule = "none" if self.profile == "mock" else "cosine>=0.707"
         return {"profile": self.profile.split("-")[0], "query_embedding": embed, "chunk_worker": dict(embed),
                 "resolved_profile": f"provider={embed['provider']} model={embed['model_id']}:{embed['model_revision']} answer_rule={rule}",
+                "chunk_worker_input": {"input_extractor": "chunk-text", "document_prefix": "" if self.profile == "mock" else "search_document: "},
                 "reranker": "disabled" if self.profile == "real-norerank" else "enabled",
                 "model_artifact": {"weights_digest": DIGEST if self.profile != "mock" else None,
                                    "pinned_digest": DIGEST if self.profile != "mock" else None}}
@@ -238,6 +239,10 @@ class ScoreCLI(unittest.TestCase):
     def test_real_pass_without_the_calibrated_rule_fails(self):
         self.real.meta["provider"]["resolved_profile"] = "provider=mock model=nomic-embed-text:v1.5 answer_rule=none"
         self.assertFails(None, "real: resolved embedding profile", "lacks answer_rule=cosine>=0.707")
+
+    def test_chunk_worker_on_the_raw_row_fails(self):
+        self.real.meta["provider"]["chunk_worker_input"] = {"input_extractor": "raw", "document_prefix": ""}
+        self.assertFails(None, "real: chunk-worker effective input")
 
     def test_provider_mismatch_fails(self):
         self.real.meta["provider"]["chunk_worker"]["model_id"] = "local-mock-embed"

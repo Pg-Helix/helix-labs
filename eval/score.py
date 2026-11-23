@@ -208,6 +208,11 @@ class Scorer:
             want_rule = "answer_rule=none" if label == "mock" else "answer_rule=cosine>=0.707"
             if want_rule not in (prov.get("resolved_profile") or ""):
                 self.err(label, f"resolved embedding profile {prov.get('resolved_profile')!r} lacks {want_rule}")
+            # The chunk worker's effective input: chunk text behind the
+            # profile's document prefix (what the calibration embedded).
+            want_input = {"input_extractor": "chunk-text", "document_prefix": "" if label == "mock" else "search_document: "}
+            if prov.get("chunk_worker_input") != want_input:
+                self.err(label, f"chunk-worker effective input {prov.get('chunk_worker_input')!r} != {want_input!r}")
             if label != "mock":
                 art = prov.get("model_artifact") or {}
                 if not art.get("weights_digest") or art.get("weights_digest") != art.get("pinned_digest"):

@@ -266,4 +266,4 @@ served cutoff.
   positive controls and the no_answer gate are valid under those stated criteria.
 - **Resolved profile.** Each pass's `run.json` now records the embedding profile Cortex
   resolved at startup. cortex-api and chunk-worker must log the same one. Real passes must show
-  the calibrated rule (`answer_rule=cosine>=0.707`) and mock passes `answer_rule=none`.
+  the calibrated rule (`answer_rule=cosine>=0.707`) and mock passes `answer_rule=none`. The chunk worker's logged effective input must be `chunk-text` behind the profile's document prefix (`search_document: ` for real, empty for mock), which is the preprocessing the calibration measured.

@@ -166,13 +166,15 @@ wf2_verify_provider() {
     # embedconfig.Resolve logs it), not just the env it was given.
     _api_profile=$($COMPOSE logs --no-log-prefix cortex-api 2>/dev/null | grep -o 'embedding profile: .*' | tail -1 || true)
     _worker_profile=$($COMPOSE logs --no-log-prefix chunk-worker 2>/dev/null | grep -o 'embedding profile: .*' | tail -1 || true)
+    # ...and the input the chunk worker actually feeds its embedder.
+    _worker_loop=$($COMPOSE logs --no-log-prefix chunk-worker 2>/dev/null | grep -o 'worker loop started .*' | tail -1 || true)
     if [ "$WF2_EXPECT_PROFILE" = "real" ]; then
         _manifest=$($COMPOSE exec -T ollama cat /root/.ollama/models/manifests/registry.ollama.ai/library/nomic-embed-text/v1.5 2>/dev/null || true)
         _pinned=$(sed -n 's/^ARG MODEL_WEIGHTS_DIGEST=//p' "$COMPOSE_DIR/../images/ollama/Dockerfile")
     fi
     API_ENV="$_api_env" WORKER_ENV="$_worker_env" OLLAMA_MANIFEST="$_manifest" PINNED_DIGEST="$_pinned" \
     EXPECT_PROFILE="$WF2_EXPECT_PROFILE" EXPECT_DISABLE_RERANK="${CORTEX_DISABLE_RERANK:-0}" \
-    API_PROFILE="$_api_profile" WORKER_PROFILE="$_worker_profile" \
+    API_PROFILE="$_api_profile" WORKER_PROFILE="$_worker_profile" WORKER_LOOP="$_worker_loop" \
         python3 - "$WF2_TMP/provider.json" <<'EOF'
 import json, os, sys
 def env(name):
@@ -203,8 +205,18 @@ rec = {
     "preprocessing": {"query_prefix": prefix[0], "document_prefix": prefix[1]},
     "model_artifact": {"weights_digest": digest, "pinned_digest": pinned},
     "resolved_profile": os.environ["API_PROFILE"].removeprefix("embedding profile: ") or None,
+    "chunk_worker_input": None,
 }
+import re
+m = re.search(r'input_extractor=(\S+) document_prefix=("(?:[^"\\]|\\.)*")', os.environ["WORKER_LOOP"])
+if m:
+    rec["chunk_worker_input"] = {"input_extractor": m.group(1), "document_prefix": json.loads(m.group(2))}
 errs = []
+# Workflow 2's chunk worker must embed "<document prefix><chunk text>",
+# the preprocessing the profile (and, for real, the calibration) assumes.
+wi = rec["chunk_worker_input"]
+if not wi or wi["input_extractor"] != "chunk-text" or wi["document_prefix"] != prefix[1]:
+    errs.append(f"chunk-worker effective input {wi!r} != chunk-text with document prefix {prefix[1]!r} ({os.environ['WORKER_LOOP']!r})")
 if not os.environ["API_PROFILE"] or os.environ["API_PROFILE"] != os.environ["WORKER_PROFILE"]:
     errs.append(f"resolved profiles differ or are missing: cortex-api {os.environ['API_PROFILE']!r} / chunk-worker {os.environ['WORKER_PROFILE']!r}")
 if q["model_id"] != w["model_id"] or q["dims"] != w["dims"] or q["provider"] != w["provider"]:
