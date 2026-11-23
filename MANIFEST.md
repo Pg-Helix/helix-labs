@@ -17,7 +17,7 @@ only one row per repo below, and it is what both acceptance gates are tested aga
 
 | repo | branch | commit | PR |
 |---|---|---|---|
-| helix-atlas | decisions/workflow2-ingestion-retrieval (stacked on k2-k3-security-corrections) | `d2e6c632a11403c982daaa6255df902b30e8975d` | [#11](https://github.com/Pg-Helix/helix-atlas/pull/11) |
+| helix-atlas | decisions/workflow2-ingestion-retrieval (stacked on k2-k3-security-corrections) | `bec6b1ef2d41f861a17293a69a33ee7b9d775f3b` | [#11](https://github.com/Pg-Helix/helix-atlas/pull/11) |
 | helix-protocol | feat/workflow2-contract (stacked on k2-k3-contract-sync) | `9ada018776e9834388b9fd6ae19ff16b644efc5c` | [#7](https://github.com/Pg-Helix/helix-protocol/pull/7) |
 | helix-kernel | feat/extension-skeleton (foundation, base of the two below) | `5de26ffac8bc7eb6b7d50cd2793a87c352fffc5c` | [#3](https://github.com/Pg-Helix/helix-kernel/pull/3) |
 | helix-kernel | feat/k2-registration | `e2528cdf2b74edbe5be76cd5ad7ffb9a88a8ebf8` | [#6](https://github.com/Pg-Helix/helix-kernel/pull/6) |
