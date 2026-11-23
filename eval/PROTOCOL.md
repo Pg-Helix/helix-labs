@@ -301,3 +301,23 @@ The fixtures, thresholds, gates, cutoff and product behavior are unchanged.
   (exit 2) before anything is written. `CALIBRATION_REFERENCE` points the replay at a
   disposable reference.
 - `eval/test_evidence.py` runs these checks offline in CI, through the real scripts.
+
+## Revision 2026-11-24: readiness and reference identity
+
+The fixtures, thresholds, gates, cutoff, scoring rules and product behavior are unchanged.
+
+- **Document readiness** (`wf2_wait_document_status`: ingestion in `run-eval.sh`, every
+  Workflow 2 wait, and the version-change v2 wait) counts a document as ready only on
+  a poll whose own transfer completed (curl 0), returned HTTP 200, and whose fresh body
+  is valid JSON with the expected `status`. Anything else is retried until the deadline.
+  On exhaustion it reports the last curl exit, HTTP status and document status, and the
+  run fails. In `run-eval.sh` that leaves the attempt incomplete, so `score.py` exits 2.
+  `EVAL_READY_TIMEOUT` (default 120 s) is the per-document deadline.
+- **Startup** (`wf2_wait_api`, also used after the version-change cutover) waits for the
+  existing unauthenticated probe to complete with its expected answer, HTTP 401. Both
+  workflows require Docker's postgres health to equal `healthy` exactly. A substring
+  match also accepted `unhealthy`.
+- **Calibration reference identity.** `calibrate.py` refuses (exit 2, before writing) an
+  output that resolves to the reference path or, when both exist, is the same file
+  (device and inode, so a hard link counts). The replay is written to a new temporary
+  file and renamed over the output, so it never writes through an existing name.

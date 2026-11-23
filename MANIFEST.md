@@ -28,7 +28,7 @@ only one row per repo below, and it is what both acceptance gates are tested aga
 | helix-cortex | feat/workflow2-ingestion-retrieval (stacked on feat/c1-worker; serves both workflows) | `ec6df64af9ce41009e57e046d28903012b45f875` | [#5](https://github.com/Pg-Helix/helix-cortex/pull/5) |
 | helix-cortex | feat/real-embedding-provider (stacked on feat/workflow2-ingestion-retrieval; serves all three workflows/milestones) | `2fcaa313e753cddd20cd0672a6228b989893e71f` | [#6](https://github.com/Pg-Helix/helix-cortex/pull/6) |
 | helix-foundry | feat/workflow2-pgvector (stacked on feat/phase1-local-stack; serves both workflows) | `85637c8068427329ec32622b1954b852a48bbd72` | [#5](https://github.com/Pg-Helix/helix-foundry/pull/5) |
-| helix-foundry | feat/real-embedding-provider (stacked on feat/workflow2-pgvector) | `18dffc19bb9cb79fbd83f9250e21682dd5936f9c` | [#6](https://github.com/Pg-Helix/helix-foundry/pull/6) |
+| helix-foundry | feat/real-embedding-provider (stacked on feat/workflow2-pgvector) | `ffc21027e3a5d452a6dcb02f4224902891b4f9ba` | [#6](https://github.com/Pg-Helix/helix-foundry/pull/6) |
 | helix-labs | feat/workflow1-demo | this repo's own current `HEAD` -- not pinned here, since a commit adding/editing this file cannot name its own final SHA in advance | [#4](https://github.com/Pg-Helix/helix-labs/pull/4) |
 | helix-labs | feat/workflow2-acceptance (stacked on feat/workflow1-demo) | this repo's own current `HEAD` -- not pinned here, for the same reason as above | [#5](https://github.com/Pg-Helix/helix-labs/pull/5) |
 | helix-labs | feat/real-embedding-eval (stacked on feat/workflow2-acceptance) | this repo's own current `HEAD` -- not pinned here, for the same reason as above | [#6](https://github.com/Pg-Helix/helix-labs/pull/6) |
@@ -42,7 +42,7 @@ history; this section is what is built and tested.
 
 | repo | commit |
 |---|---|
-| helix-foundry | `18dffc19bb9cb79fbd83f9250e21682dd5936f9c` |
+| helix-foundry | `ffc21027e3a5d452a6dcb02f4224902891b4f9ba` |
 | helix-kernel | `0f5bec3ee5f5f9506d0be87c1bec856836d10080` |
 | helix-cortex | `2fcaa313e753cddd20cd0672a6228b989893e71f` |
 

@@ -28,9 +28,11 @@ import argparse
 import hashlib
 import json
 import math
+import os
 import pathlib
 import re
 import sys
+import tempfile
 import urllib.request
 
 EVAL = pathlib.Path(__file__).resolve().parent
@@ -130,10 +132,12 @@ def main():
     ap.add_argument("--record", default=str(EVAL / "calibration.json"), help="committed record to reproduce")
     ap.add_argument("--arch", default=None, help="architecture the model ran on (recorded, not compared)")
     args = ap.parse_args()
-    # The reference is never an output: refuse before anything is written
-    # (a symlink or relative path to it counts too).
-    if pathlib.Path(args.out).resolve() == pathlib.Path(args.record).resolve():
-        print(f"--out {args.out} resolves to the committed reference {args.record}; refusing to overwrite it", file=sys.stderr)
+    # The reference is never an output: refuse before anything is written.
+    # Same resolved path (direct, relative, symlink) or, when both exist,
+    # the same file (device + inode: a hard link is a second name for it).
+    out, ref = pathlib.Path(args.out), pathlib.Path(args.record)
+    if out.resolve() == ref.resolve() or (out.exists() and ref.exists() and out.samefile(ref)):
+        print(f"--out {args.out} resolves to the committed reference {args.record} (same file); refusing to overwrite it", file=sys.stderr)
         return 2
 
     # 1. selection first -- nothing below can influence it.
@@ -191,8 +195,14 @@ def main():
         "cases": [{k: c.get(k) for k in ("id", "source", "expect", "collection", "documents", "value", "value_from",
                                          "best_document", "correct_at_cutoff")} for c in cases],
     }
-    pathlib.Path(args.out).parent.mkdir(parents=True, exist_ok=True)
-    pathlib.Path(args.out).write_text(json.dumps(record, indent=2) + "\n")
+    # Written beside --out and renamed over it: replaces the directory entry,
+    # never writes through it, so even a link created since the check above
+    # cannot carry this replay into the reference.
+    out.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=out.parent, prefix=out.name + ".")  # a new file (O_EXCL)
+    with os.fdopen(fd, "w") as f:
+        f.write(json.dumps(record, indent=2) + "\n")
+    os.replace(tmp, out)
     print(f"cutoff: midpoint {best['midpoint']:.7f} of [{best['interval'][0]:.8f}, {best['interval'][1]:.8f}] "
           f"-> {best['rounded']}; {best['correct']}/{best['n']} correct (document-level)")
     print(f"without C3: {without_c3['correct']}/{without_c3['n']}, rounded cutoff {without_c3['rounded']}")

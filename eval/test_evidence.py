@@ -13,6 +13,7 @@ import hashlib
 import http.server
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -30,21 +31,59 @@ import calibrate  # noqa: E402
 DECLINE = b'{"answer":"","answer_method":"extractive","citations":[]}'
 
 
-class Handler(http.server.BaseHTTPRequestHandler):
-    """/v1/trunc/<status>: full JSON body, Content-Length 12 bytes longer,
-    then close (curl 18). /v1/ok/<status>: the same, well-formed."""
+def mode_body(mode):
+    """A mode token like trunc200, ok500, ok200pending, ok200garbage:
+    transfer (ok, or trunc = Content-Length 12 bytes longer than sent),
+    HTTP status, and the document status in the body (default ready;
+    "garbage" = not JSON)."""
+    m = re.fullmatch(r"(ok|trunc)(\d{3})(\w*)", mode)
+    body = b"ready, but not JSON" if m[3] == "garbage" else json.dumps({"status": m[3] or "ready"}).encode()
+    return m[1] == "trunc", int(m[2]), body
 
-    def respond(self):
-        _, _, mode, status = self.path.split("/")[:4]
-        self.rfile.read(int(self.headers.get("Content-Length") or 0))
-        self.send_response(int(status))
+
+class Handler(http.server.BaseHTTPRequestHandler):
+    """/v1/trunc/<status>, /v1/ok/<status>: a decline body, truncated or not.
+    /v1/collections/<modes>/documents/<key>  (GET, readiness) and
+    /v1/probe/<modes>/<key>/collections      (GET, startup probe): the
+    n-th request for that path answers with the n-th comma-separated mode
+    (the last one repeats). A minimal Cortex for run-eval.sh's setup:
+    GET /v1/collections -> 401 (no token), POST /v1/collections -> 201
+    {"id": READY_SCRIPT}, POST .../documents -> 201. POST /v1/embeddings:
+    deterministic 768-dimensional vectors (a stand-in Ollama)."""
+    hits = {}
+    ready_script = "ok200"
+
+    def send(self, status, body, trunc=False):
+        self.send_response(status)
         self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(DECLINE) + (12 if mode == "trunc" else 0)))
+        self.send_header("Content-Length", str(len(body) + (12 if trunc else 0)))
         self.send_header("Connection", "close")
         self.end_headers()
-        self.wfile.write(DECLINE)
+        self.wfile.write(body)
         self.wfile.flush()
         self.close_connection = True
+
+    def respond(self):
+        req = self.rfile.read(int(self.headers.get("Content-Length") or 0))
+        parts = self.path.split("/")
+        if parts[2] in ("trunc", "ok"):
+            return self.send(int(parts[3]), DECLINE, parts[2] == "trunc")
+        if parts[2] == "embeddings":
+            text = json.loads(req)["input"][0].encode()
+            vec = [b / 255 - 0.5 for b in hashlib.sha512(text).digest() * 12]
+            return self.send(200, json.dumps({"data": [{"embedding": vec}]}).encode())
+        if self.command == "GET" and (parts[2] == "probe" or "documents" in parts):
+            modes = parts[3].split(",")
+            n = Handler.hits[self.path] = Handler.hits.get(self.path, 0) + 1
+            trunc, status, body = mode_body(modes[min(n, len(modes)) - 1])
+            return self.send(status, body, trunc)
+        if parts[2:] == ["collections"]:
+            if self.command == "GET":
+                return self.send(401, b'{"error":"unauthenticated"}')
+            return self.send(201, json.dumps({"id": Handler.ready_script}).encode())
+        if self.command == "POST" and parts[-1] == "documents":
+            return self.send(201, json.dumps({"id": f"doc{len(Handler.hits)}-{threading.get_ident()}"}).encode())
+        self.send(404, b"{}")
 
     do_GET = do_POST = do_DELETE = respond
 
@@ -52,21 +91,23 @@ class Handler(http.server.BaseHTTPRequestHandler):
         pass
 
 
+def setUpModule():
+    global SRV, PORT
+    SRV = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=SRV.serve_forever, daemon=True).start()
+    PORT = SRV.server_address[1]
+
+
+def tearDownModule():
+    SRV.shutdown()
+
+
 class Layout(unittest.TestCase):
     """A disposable helix-labs + stub helix-foundry, a loopback server,
     and a stub docker that fails every call with exit 42."""
 
-    @classmethod
-    def setUpClass(cls):
-        cls.srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-        threading.Thread(target=cls.srv.serve_forever, daemon=True).start()
-        cls.port = cls.srv.server_address[1]
-
-    @classmethod
-    def tearDownClass(cls):
-        cls.srv.shutdown()
-
     def setUp(self):
+        self.port = PORT
         self.root = Path(tempfile.mkdtemp())
         self.labs = self.root / "helix-labs"
         for d in ("eval", "workflow-2"):
@@ -85,12 +126,12 @@ class Layout(unittest.TestCase):
     def tearDown(self):
         shutil.rmtree(self.root)
 
-    def sh(self, script, *args):
+    def sh(self, script, *args, env=None):
         """Run a shell snippet as a script inside workflow-2/ (lib.sh
         derives its sibling paths from $0), with lib.sh sourced."""
         f = self.labs / "workflow-2" / "_t.sh"
         f.write_text('set -eu\n. "$(dirname "$0")/lib.sh"\n' + script)
-        return subprocess.run(["sh", str(f), *args], capture_output=True, text=True, env=self.env)
+        return subprocess.run(["sh", str(f), *args], capture_output=True, text=True, env=dict(self.env, **(env or {})))
 
     def score(self, mock, real, norerank):
         p = subprocess.run([sys.executable, str(self.labs / "eval" / "score.py"), "--mock", str(mock), "--real", str(real),
@@ -176,6 +217,88 @@ jobs -p | wc -l | tr -d ' ' | sed 's/^/left=/'
         self.assertEqual(out[3], "left=0")  # every child reaped
 
 
+class Readiness(Layout):
+    """wf2_wait_document_status (Workflow 2, version-change, run-eval
+    ingestion) and wf2_wait_api (startup, version-change cutover)."""
+
+    def wait_doc(self, modes, key, deadline=2):
+        r = self.sh(f'wf2_wait_document_status "{modes}" {key} token ready {deadline}')
+        return r, Handler.hits.get(f"/v1/collections/{modes}/documents/{key}", 0)
+
+    def test_persistent_failures_never_count_as_ready(self):
+        for modes, last in (("trunc200", "curl exit 18, http 200, document status ready"),  # whole ready body, short transfer
+                            ("ok500", "curl exit 0, http 500, document status ready"),      # ready-looking error response
+                            ("ok200pending", "curl exit 0, http 200, document status pending"),
+                            ("ok200garbage", "curl exit 0, http 200, document status none")):
+            with self.subTest(modes):
+                r, hits = self.wait_doc(modes, "persist")
+                self.assertNotEqual(r.returncode, 0, r.stderr)
+                self.assertIn(f"not ready within 2s (last poll: {last})", r.stderr)
+                self.assertGreaterEqual(hits, 2)  # retried within the deadline, not one shot
+
+    def test_a_failed_poll_is_retried_and_a_valid_one_accepted(self):
+        r, hits = self.wait_doc("trunc200,ok500,ok200", "recover", deadline=10)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(hits, 3)
+        r, hits = self.wait_doc("ok200", "control")
+        self.assertEqual((r.returncode, hits), (0, 1), r.stderr)
+
+    def test_startup_probe_requires_a_complete_401(self):
+        for modes, ok, last in (("trunc401", False, "curl exit 18, http 401"), ("ok200", False, "curl exit 0, http 200"),
+                                ("ok503,trunc401,ok401", True, None)):
+            with self.subTest(modes):
+                api = f"http://127.0.0.1:{self.port}/v1/probe/{modes}/k"
+                r = self.sh("wf2_wait_api 5", env={"WF2_API_URL": api})
+                self.assertEqual(r.returncode == 0, ok, r.stderr)
+                if last:
+                    self.assertIn(f"(last: {last})", r.stderr)
+                else:
+                    self.assertEqual(Handler.hits[f"/v1/probe/{modes}/k/collections"], 3)
+
+
+FAKE_STACK = """#!/bin/sh
+# docker for run-eval.sh's setup only: a healthy postgres, clean
+# migrations, role checks, the mock profile's startup log lines.
+case " $* " in
+  *" ps postgres "*) echo healthy ;;
+  *" ps -q "*) echo fake ;;
+  *migrate.sh*) echo "already applied 0001" ;;
+  *" logs "*) echo 'embedding profile: provider=mock answer_rule=none'
+              echo 'worker loop started input_extractor=chunk-text document_prefix=""' ;;
+  *" psql "*) echo 'helix_cortex_owner|5|0|f|f|f' ;;
+esac
+exit 0
+"""
+
+
+class RunnerReadiness(Layout):
+    def test_persistent_readiness_failure_leaves_the_attempt_incomplete(self):
+        (self.bin / "docker").write_text(FAKE_STACK)
+        compose = self.root / "helix-foundry" / "compose"
+        (compose / ".env").write_text(f"HELIX_CORTEX_API_PORT={self.port}\nHELIX_ADMIN_PASSWORD=unused\n")
+        (compose / "auth-fixture.json").write_text(json.dumps({f"t-{p}": {"principal": p} for p in ("alice", "bob", "carol")}))
+        (self.root / "helix-cortex").mkdir()
+        (self.root / "helix-cortex" / "go.mod").write_text("module x\n")
+        passes = self.valid_passes()
+        self.assertEqual(self.score(*(passes[p].dir for p in ("mock", "real", "real-norerank")))[0], 0)
+        for script in ("trunc200", "ok500"):
+            with self.subTest(script):
+                Handler.ready_script = script  # every readiness poll for the first document
+                try:
+                    r = subprocess.run(["sh", str(self.labs / "eval" / "run-eval.sh"), "mock"], capture_output=True, text=True,
+                                       env=dict(self.env, EVAL_READY_TIMEOUT="2"))
+                finally:
+                    Handler.ready_script = "ok200"
+                self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+                self.assertIn("wf2: provider ok: mock", r.stdout)  # setup passed; ingestion is what failed
+                self.assertIn("not ready within 2s (last poll: curl exit " + ("18, http 200" if script == "trunc200" else "0, http 500"), r.stderr)
+                meta = json.loads((passes["mock"].dir / "run.json").read_text())
+                self.assertIs(meta["completed"], False)
+                code, out = self.score(*(passes[p].dir for p in ("mock", "real", "real-norerank")))
+                self.assertEqual(code, 2, out)
+                self.assertIn("mock: run.json says the run did not complete", out)
+
+
 class Calibration(unittest.TestCase):
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp())
@@ -194,12 +317,32 @@ class Calibration(unittest.TestCase):
     def test_output_resolving_to_the_reference_is_refused_before_writing(self):
         link = self.tmp / "replay.json"
         link.symlink_to(self.ref)
-        for out in (self.ref, link, self.tmp / "sub" / ".." / "calibration.json"):
+        hard = self.tmp / "hard.json"
+        os.link(self.ref, hard)  # a second name for the same file
+        for out in (self.ref, link, hard, self.tmp / "sub" / ".." / "calibration.json"):
             r = self.run_cli(out)
             self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
             self.assertIn("resolves to the committed reference", r.stderr)
             self.assertEqual(hashlib.sha256(self.ref.read_bytes()).hexdigest(), self.digest)
         self.assertFalse((self.tmp / "sub").exists())
+
+    def test_a_separate_output_with_mismatched_model_metadata_exits_1(self):
+        ref = json.loads(self.ref.read_text())
+        ref["model"]["dims"] = 96
+        self.ref.write_text(json.dumps(ref, indent=2) + "\n")
+        digest = hashlib.sha256(self.ref.read_bytes()).hexdigest()
+        weights = ref["model"]["weights_digest"]
+        (self.tmp / "Dockerfile").write_text(f"ARG OLLAMA_IMAGE_DIGEST={ref['model']['ollama_image_digest']}\n"
+                                             f"ARG MODEL_WEIGHTS_DIGEST={weights.replace('sha256:', 'sha256-')}\n")
+        (self.tmp / "manifest.json").write_text(json.dumps({"layers": [{"mediaType": "application/vnd.ollama.image.model", "digest": weights}]}))
+        out = self.tmp / "out" / "replay.json"
+        r = subprocess.run([sys.executable, str(EVAL / "calibrate.py"), "--url", f"http://127.0.0.1:{PORT}",
+                            "--manifest", str(self.tmp / "manifest.json"), "--dockerfile", str(self.tmp / "Dockerfile"),
+                            "--record", str(self.ref), "--out", str(out)], capture_output=True, text=True)
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("MISMATCH: model.dims 768 != recorded 96", r.stderr)
+        self.assertEqual(json.loads(out.read_text())["model"]["dims"], 768)  # the replay went to its own file
+        self.assertEqual(hashlib.sha256(self.ref.read_bytes()).hexdigest(), digest)
 
     def test_every_model_field_is_compared(self):
         old = json.loads(self.ref.read_text())
