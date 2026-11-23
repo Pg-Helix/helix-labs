@@ -115,7 +115,7 @@ ingest() {
         [ "$code" = "201" ] || { echo "run-eval: ingest $name failed (http $code)" >&2; cat "$WF2_BODY" >&2; exit 1; }
         docid=$(json_field id)
         printf '%s\t%s\t%s\n' "$name" "$docid" "$_label" >> "$OUT_DIR/doc_ids.tsv"
-        wf2_wait_document_status "$_col" "$docid" "$ALICE_TOKEN" ready 120
+        wf2_wait_document_status "$_col" "$docid" "$ALICE_TOKEN" ready "${EVAL_READY_TIMEOUT:-120}"
     done
 }
 

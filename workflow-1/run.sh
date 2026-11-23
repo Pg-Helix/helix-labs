@@ -36,7 +36,7 @@ $COMPOSE up --build -d
 
 echo "workflow-1: waiting for postgres"
 i=0
-until $COMPOSE ps postgres --format '{{.Health}}' 2>/dev/null | grep -q healthy; do
+until [ "$($COMPOSE ps postgres --format '{{.Health}}' 2>/dev/null || true)" = healthy ]; do
     i=$((i + 1))
     if [ "$i" -gt 60 ]; then
         echo "workflow-1: postgres never became healthy" >&2

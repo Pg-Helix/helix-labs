@@ -283,7 +283,8 @@ wf2_up() {
     echo "wf2: bringing up project $WF2_PROJECT (profile=$WF2_EXPECT_PROFILE, tmp=$WF2_TMP)"
     $COMPOSE up --build -d
     i=0
-    until $COMPOSE ps postgres --format '{{.Health}}' 2>/dev/null | grep -q healthy; do
+    # Exact match: a substring test would also accept "unhealthy".
+    until [ "$($COMPOSE ps postgres --format '{{.Health}}' 2>/dev/null || true)" = healthy ]; do
         i=$((i + 1))
         if [ "$i" -gt 60 ]; then
             echo "wf2: postgres never became healthy" >&2
@@ -307,33 +308,48 @@ wf2_up() {
     fi
     echo "wf2: migrations applied as helix_cortex_owner; rerun was a no-op ($(grep -c 'already applied' "$WF2_TMP/migration-rerun.log") skipped)"
     wf2_check_roles
-    i=0
-    until [ "$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "$API/collections" || true)" != "000" ]; do
-        i=$((i + 1))
-        if [ "$i" -gt 60 ]; then
-            echo "wf2: cortex-api never answered on $API" >&2
-            return 1
-        fi
-        sleep 1
-    done
+    wf2_wait_api 60
     wf2_verify_provider
     wf2_load_tokens
 }
 
-# wf2_wait_document_status COLLECTION DOCUMENT TOKEN EXPECTED TIMEOUT_SECONDS
-wf2_wait_document_status() {
-    col=$1 doc=$2 token=$3 expected=$4 timeout=${5:-30}
-    i=0
+# wf2_wait_api SECONDS: cortex-api is up once its unauthenticated probe
+# (GET /collections without a token) completes (curl 0) with its expected
+# answer, HTTP 401. A refused connection, a failed transfer or any other
+# status is retried until the deadline, then reported.
+wf2_wait_api() {
+    _deadline=$(( $(date +%s) + $1 ))
     while true; do
-        code=$(api GET "/collections/$col/documents/$doc" "$token" || true)
-        status=$(json_field status 2>/dev/null || echo "")
-        if [ "$status" = "$expected" ]; then
-            return 0
+        _rc=0
+        _http=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "$API/collections") || _rc=$?
+        [ "$_rc" -eq 0 ] && [ "$_http" = 401 ] && return 0
+        if [ "$(date +%s)" -ge "$_deadline" ]; then
+            echo "wf2: cortex-api never gave its unauthenticated 401 on $API/collections within $1s (last: curl exit $_rc, http ${_http:-none})" >&2
+            return 1
         fi
-        i=$((i + 1))
-        if [ "$i" -gt "$timeout" ]; then
-            echo "wf2: timed out waiting for document $doc status=$expected (last saw: $status, http=$code)" >&2
-            cat "$WF2_BODY" >&2 || true
+        sleep 1
+    done
+}
+
+# wf2_wait_document_status COLLECTION DOCUMENT TOKEN EXPECTED TIMEOUT_SECONDS
+# Ready only on a response that is THIS poll's own and complete: curl
+# exit 0, HTTP 200, and a fresh body that is valid JSON whose "status" is
+# EXPECTED. A failed transfer (e.g. curl 18 after a "ready" body), a
+# non-200 with a ready-looking body, or unparseable JSON is retried until
+# the deadline (plus at most one in-flight request, WF2_HTTP_TIMEOUT),
+# then the last transport, HTTP and document status are reported.
+wf2_wait_document_status() {
+    _wcol=$1 _wdoc=$2 _wtok=$3 _wexp=$4 _wsec=${5:-30}
+    _wout="$WF2_TMP/document_status.json"
+    _wend=$(( $(date +%s) + _wsec ))
+    while true; do
+        rm -f "$_wout"
+        _rc=0
+        _http=$(api GET "/collections/$_wcol/documents/$_wdoc" "$_wtok" "" "$_wout") || _rc=$?
+        _wstat=$(json_field status "$_wout" 2>/dev/null || echo "none")
+        [ "$_rc" -eq 0 ] && [ "$_http" = 200 ] && [ "$_wstat" = "$_wexp" ] && return 0
+        if [ "$(date +%s)" -ge "$_wend" ]; then
+            echo "wf2: document $_wdoc not $_wexp within ${_wsec}s (last poll: curl exit $_rc, http ${_http:-none}, document status $_wstat)" >&2
             return 1
         fi
         sleep 1

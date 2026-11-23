@@ -72,11 +72,7 @@ services:
       CORTEX_CHUNK_MODEL_REVISION: chunk-v2
 EOF
 $COMPOSE -f $WF2_TMP/vc_override.yml up -d --force-recreate cortex-api
-i=0
-until curl -s -o /dev/null -w '%{http_code}' "$API/collections" | grep -qv '000'; do
-    i=$((i + 1)); [ "$i" -gt 30 ] && { echo "FAIL: cortex-api never came back up after cutover"; exit 1; }
-    sleep 1
-done
+wf2_wait_api 30 || { echo "FAIL: cortex-api never came back up after cutover"; exit 1; }
 
 echo "--- evidence for the pre-cutover chunk, BEFORE v2 has finished embedding: expect a clean 404, not an error ---"
 code=$(api GET "/evidence/$CHUNK?tenant=acme" "$ALICE_TOKEN")
@@ -91,21 +87,13 @@ fi
 echo "--- run the v2 worker to actually process the backfilled job ---"
 timeout 30 $COMPOSE run --rm -e CORTEX_MODEL_REVISION=chunk-v2 chunk-worker >$WF2_TMP/vc_worker.log 2>&1 &
 WORKER_PID=$!
-i=0
-while true; do
-    code=$(api GET "/collections/$COL/documents/$DOC" "$ALICE_TOKEN")
-    STATUS=$(json_field status 2>/dev/null || echo "")
-    [ "$STATUS" = "ready" ] && break
-    i=$((i + 1))
-    if [ "$i" -gt 30 ]; then
-        echo "FAIL: document never became ready under v2 (last status=$STATUS, http=$code)" >&2
-        cat $WF2_TMP/vc_worker.log >&2
-        kill "$WORKER_PID" 2>/dev/null || true
-        wait "$WORKER_PID" 2>/dev/null || true
-        exit 1
-    fi
-    sleep 1
-done
+if ! wf2_wait_document_status "$COL" "$DOC" "$ALICE_TOKEN" ready 30; then
+    echo "FAIL: document never became ready under v2" >&2
+    cat $WF2_TMP/vc_worker.log >&2
+    kill "$WORKER_PID" 2>/dev/null || true
+    wait "$WORKER_PID" 2>/dev/null || true
+    exit 1
+fi
 kill "$WORKER_PID" 2>/dev/null || true
 wait "$WORKER_PID" 2>/dev/null || true
 
