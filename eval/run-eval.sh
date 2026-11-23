@@ -17,7 +17,8 @@
 #   doc_ids.tsv       corpus file -> cortex document id -> collection
 #   chunks.jsonl      every active chunk (id, document, FULL text) -- the
 #                     inventory passage-level relevance is resolved against
-#   <query>__<stage>.json/.code   one response body + HTTP status per request
+#   <query>__<stage>.json/.code/.curl   one response body, HTTP status and
+#                     curl exit status (0 = transfer completed) per request
 #                     (score.py plan lists them: all four ranking stages for
 #                     every query; /answers for every authorized v1 query
 #                     and every answerability.jsonl row; unauthorized
@@ -50,23 +51,29 @@ if [ -d "$OUT_DIR" ] && [ -n "$(ls -A "$OUT_DIR")" ] && [ ! -f "$OUT_DIR/$MARKER
     echo "run-eval: refusing to replace $OUT_DIR: not empty and not written by run-eval.sh (move historical results elsewhere)" >&2; exit 64
 fi
 
+# Accepted: this attempt owns OUT_DIR from here on. Invalidate whatever an
+# earlier attempt left BEFORE anything else can fail (helpers, Compose,
+# migrations): a failed startup must never leave a previous completed run
+# behind to be scored as this one.
+STARTED=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+rm -rf "$OUT_DIR"
+mkdir -p "$OUT_DIR"
+: > "$OUT_DIR/$MARKER"
+printf '{"schema": 2, "profile": "%s", "completed": false, "started_at": "%s"}\n' "$PROFILE" "$STARTED" > "$OUT_DIR/run.json"
+
 CORTEX_TEST_HOOKS=1
 export CORTEX_TEST_HOOKS
 . "$EVAL_DIR/../workflow-2/lib.sh"
 trap wf2_cleanup EXIT INT TERM
 
-STARTED=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 wf2_up
 
-rm -rf "$OUT_DIR"
-mkdir -p "$OUT_DIR"
-: > "$OUT_DIR/$MARKER"
-
 # write_meta COMPLETED [REQUESTS]: run.json, rewritten at the end with
-# completed=true -- a crashed run leaves completed=false behind.
+# completed=true -- a crashed run leaves completed=false behind. Written
+# to a temp file and renamed, so a reader never sees a partial run.json.
 write_meta() {
     BINDING=${BINDING:-[]} STARTED="$STARTED" PROFILE="$PROFILE" ROOT="$EVAL_DIR/../.." \
-        python3 - "$OUT_DIR/run.json" "$EVAL_DIR" "$WF2_TMP/provider.json" "$1" "${2:-0}" <<'EOF'
+        python3 - "$OUT_DIR/run.json.tmp" "$EVAL_DIR" "$WF2_TMP/provider.json" "$1" "${2:-0}" <<'EOF'
 import datetime, hashlib, json, os, pathlib, re, subprocess, sys
 out, eval_dir, provider, completed, requests = sys.argv[1:6]
 root = pathlib.Path(os.environ["ROOT"]).resolve()
@@ -81,7 +88,7 @@ gomod = (root / "helix-cortex" / "go.mod").read_text()
 deps = dict(re.findall(r"github.com/Pg-Helix/(helix-infer|helix-protocol)\S*\s+(\S+)", gomod))
 corpus = sorted(pathlib.Path(eval_dir, "corpus").rglob("*.md"))
 meta = {
-    "schema": 1, "profile": os.environ["PROFILE"], "completed": completed == "true",
+    "schema": 2, "profile": os.environ["PROFILE"], "completed": completed == "true",
     "started_at": os.environ["STARTED"],
     "finished_at": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ") if completed == "true" else None,
     "requests": int(requests),
@@ -94,6 +101,7 @@ meta = {
 }
 json.dump(meta, open(out, "w"), indent=2)
 EOF
+    mv "$OUT_DIR/run.json.tmp" "$OUT_DIR/run.json"
 }
 write_meta false
 
@@ -148,10 +156,8 @@ n=0
 while IFS="$TAB" read -r name endpoint principal stage body; do
     case "$principal" in alice) token=$ALICE_TOKEN ;; bob) token=$BOB_TOKEN ;; esac
     [ "$stage" = "-" ] && hdr="" || hdr="X-Eval-Stage: $stage"
-    code=$(api POST "$endpoint" "$token" "$body" "$OUT_DIR/$name.json" "$hdr" || true)
-    echo "$code" > "$OUT_DIR/$name.code"
-    if [ "$code" = "000" ] || [ -z "$code" ]; then
-        echo "run-eval: $name got no HTTP response; aborting (run.json stays completed=false)" >&2
+    if ! record_request "$OUT_DIR" "$name" POST "$endpoint" "$token" "$body" "$hdr"; then
+        echo "run-eval: $name: transfer failed (curl exit $(cat "$OUT_DIR/$name.curl"), http $(cat "$OUT_DIR/$name.code")); aborting, run.json stays completed=false" >&2
         exit 1
     fi
     n=$((n + 1))

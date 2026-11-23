@@ -267,3 +267,37 @@ served cutoff.
 - **Resolved profile.** Each pass's `run.json` now records the embedding profile Cortex
   resolved at startup. cortex-api and chunk-worker must log the same one. Real passes must show
   the calibrated rule (`answer_rule=cosine>=0.707`) and mock passes `answer_rule=none`. The chunk worker's logged effective input must be `chunk-text` behind the profile's document prefix (`search_document: ` for real, empty for mock), which is the preprocessing the calibration measured.
+
+## Revision 2026-11-23 (2): evidence integrity
+
+The fixtures, thresholds, gates, cutoff and product behavior are unchanged.
+
+- **Attempts.** Once `run-eval.sh` has accepted an output directory (not a symlink;
+  either empty or carrying its marker), it removes the previous contents and writes
+  `run.json` with `completed: false` before it sources helpers or starts Compose. A
+  failed startup therefore leaves nothing scoreable, and `score.py` exits 2. Completion
+  is written only after every planned request has finished, via an atomic rename.
+- **Transport status (`run.json` schema 2).** Every request records curl's own exit
+  status as `<name>.curl`, next to `.code` and `.json`. The runner aborts the attempt,
+  leaving it incomplete, on any nonzero status, even when the HTTP status and body
+  look right. For example, curl 18 means the connection closed before the advertised
+  length. A missing, malformed or nonzero `.curl` is invalid evidence (exit 2), reported
+  as profile/query/stage. Exit 1 still means valid evidence with a missed target.
+- **Historical artifacts.** Schema 1 artifacts (everything before this revision,
+  including CI artifacts 14701162129, 14760491989, 14805346665 and 14808741266) carry
+  no transport status. The current scorer rejects them by schema. To reproduce their
+  results, use the scorer from the helix-labs commit their `run.json` records under
+  `revisions.helix-labs.commit`:
+  `git -C helix-labs worktree add /tmp/scorer-<commit> <commit>`, then
+  `python3 /tmp/scorer-<commit>/eval/score.py --inputs /tmp/scorer-<commit>/eval --mock … --real … --real-norerank …`.
+- **Workflow 2 background requests** are reaped individually. A transfer that failed is
+  reported as `curl-exit-N(http X)` and fails its scenario, even if its status line was
+  the expected 201 or 403. The in-flight barrier poll counts readiness only from
+  completed transfers.
+- **Calibration replay** also compares the whole recorded `model` object: wire tag,
+  dimensions, metric, prefixes, runtime image digest and weights digest. Any difference
+  returns 1. The 1e-3 cross-architecture value tolerance and the exact per-case cutoff
+  decisions are unchanged. An output path that resolves to the reference is refused
+  (exit 2) before anything is written. `CALIBRATION_REFERENCE` points the replay at a
+  disposable reference.
+- `eval/test_evidence.py` runs these checks offline in CI, through the real scripts.

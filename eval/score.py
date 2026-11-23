@@ -26,6 +26,13 @@ full text (from the chunk inventory, not the 200-char search snippet)
 contains that label's snippet. Repeated chunks in one result list count
 once.
 
+Transport evidence (run.json schema 2): every request also records curl's
+own exit status (<name>.curl). A missing, malformed or nonzero status is
+invalid evidence for that profile/query/stage even when the HTTP status
+and body look right -- e.g. curl 18, a body cut short of its advertised
+length. Older artifacts (schema 1) predate this record; score them with
+the scorer at the helix-labs commit their run.json records (PROTOCOL.md).
+
 Exit status: 0 = valid evidence and every gate passed; 1 = valid
 evidence but at least one acceptance target or security gate failed;
 2 = evidence missing/invalid/inconsistent (nothing can be concluded).
@@ -162,15 +169,27 @@ class Scorer:
         for f in d.iterdir():
             if f.name in ("run.json", "doc_ids.tsv", "chunks.jsonl", ".helix-eval-results"):
                 continue
-            m = re.fullmatch(r"(.+)\.(json|code)", f.name)
+            m = re.fullmatch(r"(.+)\.(json|code|curl)", f.name)
             if not m or m.group(1) not in required:
                 self.err(label, f"unknown input file {f.name}")
                 continue
             present.setdefault(m.group(1), set()).add(m.group(2))
         P["responses"] = {}
         for name in required:
-            if present.get(name) != {"json", "code"}:
-                self.err(f"{label}/{name}", "unexecuted request (response .json/.code missing)")
+            got = present.get(name, set())
+            if got == {"json", "code"}:
+                self.err(where(label, name), "missing transport status (.curl): cannot show the transfer completed")
+                continue
+            if got != {"json", "code", "curl"}:
+                self.err(f"{label}/{name}", "unexecuted request (response .json/.code/.curl missing)")
+                continue
+            curl = (d / f"{name}.curl").read_text().strip()
+            if not re.fullmatch(r"\d+", curl):
+                self.err(where(label, name), f"malformed transport status {curl!r} in {name}.curl")
+                continue
+            if curl != "0":
+                http = (d / f"{name}.code").read_text().strip()
+                self.err(where(label, name), f"transport failure: curl exit {curl} (HTTP status {http!r}); the response is not evidence")
                 continue
             P["responses"][name] = self.load_response(label, d, name)
         P["ok"] = len(self.errors) == before
@@ -187,6 +206,9 @@ class Scorer:
             return None
 
     def check_meta(self, label, meta):
+        if meta.get("schema") != 2:
+            self.err(label, f"run.json schema {meta.get('schema')!r}: this scorer needs schema 2 (per-request transport status); "
+                            "score older artifacts with the scorer at the helix-labs commit their run.json records (PROTOCOL.md)")
         if meta.get("completed") is not True:
             self.err(label, "run.json says the run did not complete")
         if meta.get("profile") != label:
@@ -582,6 +604,12 @@ def required(q):
     """Queries feeding a required metric: the held-out targets and Decision D."""
     return (q["split"] == "held_out" and q["category"] in ("paraphrase", "exact_term")) or \
         (q["split"] == "dev" and q["category"] == "paraphrase")
+
+
+def where(label, name):
+    """profile/query/stage for one planned request file name."""
+    qid, _, stage = name.partition("__")
+    return f"{label}/{qid}/{stage}"
 
 
 def extractive_of(answer, texts):

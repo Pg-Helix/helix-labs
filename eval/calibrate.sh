@@ -10,7 +10,9 @@
 # digest mismatch), runs it on loopback only, and runs calibrate.py
 # against it. Writes the replay record to $CALIBRATION_OUT (default:
 # eval/calibration-replay.json, gitignored) and exits 0 only if it
-# reproduces the committed eval/calibration.json.
+# reproduces the reference ($CALIBRATION_REFERENCE, default the committed
+# eval/calibration.json); 1 if it differs, 2 if it could not run or the
+# output path resolves to the reference.
 set -eu
 EVAL_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 OLLAMA_DIR="$EVAL_DIR/../../helix-foundry/images/ollama"
@@ -29,4 +31,5 @@ until curl -sf "http://127.0.0.1:$PORT/api/tags" >/dev/null; do
 done
 docker exec "$CID" cat /root/.ollama/models/manifests/registry.ollama.ai/library/nomic-embed-text/v1.5 > "$T/manifest.json"
 python3 "$EVAL_DIR/calibrate.py" --url "http://127.0.0.1:$PORT" --manifest "$T/manifest.json" \
-    --dockerfile "$OLLAMA_DIR/Dockerfile" --out "$OUT" --arch "$(docker version -f '{{.Server.Arch}}')"
+    --dockerfile "$OLLAMA_DIR/Dockerfile" --out "$OUT" --record "${CALIBRATION_REFERENCE:-$EVAL_DIR/calibration.json}" \
+    --arch "$(docker version -f '{{.Server.Arch}}')"

@@ -95,6 +95,32 @@ def select_cutoff(cases):
     return best
 
 
+def compare_to_record(old, new, best):
+    """Everything a replay must reproduce: inputs, the WHOLE model object
+    (wire tag, dims, metric, prefixes, runtime image and weights digests),
+    the case selection, each case's side of the served cutoff, the result,
+    and every decision value within VALUE_TOLERANCE (cross-architecture)."""
+    problems = []
+    if old.get("inputs") != new["inputs"]:
+        problems.append(f"input hashes differ from the committed record: {old.get('inputs')} vs {new['inputs']}")
+    old_model = old.get("model") or {}
+    for k in sorted(set(old_model) | set(new["model"])):
+        if old_model.get(k) != new["model"].get(k):
+            problems.append(f"model.{k} {new['model'].get(k)!r} != recorded {old_model.get(k)!r}")
+    old_cases = old.get("cases") or []
+    if [c.get("id") for c in old_cases] != [c["id"] for c in new["cases"]]:
+        problems.append("selected cases differ from the committed record")
+    for o, n in zip(old_cases, new["cases"]):
+        if (o["value"] is None) != (n["value"] is None) or (o["value"] is not None and abs(o["value"] - n["value"]) > VALUE_TOLERANCE):
+            problems.append(f"{n['id']} value {n['value']} != recorded {o['value']}")
+        if correct(o, SERVED_CUTOFF) != correct(n, SERVED_CUTOFF):
+            problems.append(f"{n['id']} lands on the other side of {SERVED_CUTOFF} than recorded")
+    r = old.get("result") or {}
+    if (r.get("correct"), r.get("rounded")) != (best["correct"], best["rounded"]):
+        problems.append(f"result {best['correct']}/{best['rounded']} != recorded {r.get('correct')}/{r.get('rounded')}")
+    return problems
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--url", required=True, help="Ollama base URL serving the pinned model")
@@ -104,6 +130,11 @@ def main():
     ap.add_argument("--record", default=str(EVAL / "calibration.json"), help="committed record to reproduce")
     ap.add_argument("--arch", default=None, help="architecture the model ran on (recorded, not compared)")
     args = ap.parse_args()
+    # The reference is never an output: refuse before anything is written
+    # (a symlink or relative path to it counts too).
+    if pathlib.Path(args.out).resolve() == pathlib.Path(args.record).resolve():
+        print(f"--out {args.out} resolves to the committed reference {args.record}; refusing to overwrite it", file=sys.stderr)
+        return 2
 
     # 1. selection first -- nothing below can influence it.
     cases = select_cases()
@@ -174,20 +205,9 @@ def main():
     rec_path = pathlib.Path(args.record)
     if rec_path.exists():
         old = json.loads(rec_path.read_text())
-        if old["inputs"] != record["inputs"]:
-            problems.append("input hashes differ from the committed record")
-        if [c["id"] for c in old["cases"]] != [c["id"] for c in record["cases"]]:
-            problems.append("selected cases differ from the committed record")
-        for o, n in zip(old["cases"], record["cases"]):
-            if (o["value"] is None) != (n["value"] is None) or (o["value"] is not None and abs(o["value"] - n["value"]) > VALUE_TOLERANCE):
-                problems.append(f"{n['id']} value {n['value']} != recorded {o['value']}")
-        for o, n in zip(old["cases"], record["cases"]):
-            if correct(o, SERVED_CUTOFF) != correct(n, SERVED_CUTOFF):
-                problems.append(f"{n['id']} lands on the other side of {SERVED_CUTOFF} than recorded")
+        problems += compare_to_record(old, record, best)
         if old.get("runtime_arch") != record["runtime_arch"]:
             print(f"note: recorded on {old.get('runtime_arch')}, replayed on {record['runtime_arch']}; values compared within {VALUE_TOLERANCE}")
-        if (old["result"]["correct"], old["result"]["rounded"]) != (best["correct"], best["rounded"]):
-            problems.append(f"result {best['correct']}/{best['rounded']} != recorded {old['result']['correct']}/{old['result']['rounded']}")
     else:
         problems.append(f"no committed record at {rec_path} (this replay was written to {args.out})")
     for p in problems:

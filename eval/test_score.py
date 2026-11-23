@@ -65,8 +65,9 @@ class Pass:
         for a in ANSWERABILITY:
             files[f"{a['id']}__answer"] = (200, self.answer(list(dict.fromkeys(i["document"] for i in a["relevant"]))))
         self.responses = files
+        self.curl = {}  # name -> curl exit status (default 0); None = no .curl file
         self.meta = {
-            "schema": 1, "profile": profile, "completed": True,
+            "schema": 2, "profile": profile, "completed": True,
             "inputs": {"queries_sha256": sha((EVAL / "queries.jsonl").read_bytes()),
                        "corpus_sha256": sha(b"".join(p.read_bytes() for p in CORPUS)),
                        "answerability_sha256": sha((EVAL / "answerability.jsonl").read_bytes())},
@@ -110,6 +111,8 @@ class Pass:
             json.dumps({"chunk_id": self.chunk[n], "document_id": self.doc[n], "text": self.text[n]}) + "\n" for n in self.doc))
         for name, (code, body) in self.responses.items():
             (self.dir / f"{name}.code").write_text(f"{code}\n")
+            if self.curl.get(name, 0) is not None:
+                (self.dir / f"{name}.curl").write_text(f"{self.curl.get(name, 0)}\n")
             (self.dir / f"{name}.json").write_text(body if isinstance(body, str) else json.dumps(body))
         return self
 
@@ -200,6 +203,29 @@ class ScoreCLI(unittest.TestCase):
     def test_transport_failure_fails(self):
         self.real.responses["E2__answer"] = (0, "")
         self.assertFails(None, "real/E2/answer: no HTTP response")
+
+    # --- transport evidence (run.json schema 2) ---
+
+    def test_transport_failure_with_expected_status_and_valid_body_is_invalid(self):
+        # curl 18: the full decline JSON and HTTP 200 arrived, but the
+        # connection closed before the advertised Content-Length.
+        self.real.curl["E1__answer"] = 18
+        self.assertFails(None, "real/E1/answer: transport failure: curl exit 18 (HTTP status '200')")
+        self.assertEqual(self.report["status"], "invalid_evidence")
+
+    def test_transport_failure_on_an_expected_denial_is_invalid(self):
+        self.mock.curl["F2__dense-only"] = 18
+        self.assertFails(None, "mock/F2/dense-only: transport failure: curl exit 18 (HTTP status '403')")
+
+    def test_missing_or_malformed_transport_status_is_invalid(self):
+        self.real.curl["A1__final"] = None
+        self.real.curl["B2__answer"] = "x"
+        self.assertFails(None, "real/A1/final: missing transport status", "real/B2/answer: malformed transport status 'x'")
+
+    def test_schema_1_artifacts_are_pointed_at_their_own_scorer(self):
+        self.real.meta["schema"] = 1
+        self.assertFails(None, "real: run.json schema 1: this scorer needs schema 2",
+                         "score older artifacts with the scorer at the helix-labs commit their run.json records")
 
     def test_schema_violation_fails(self):
         self.real.responses["C1__final"] = (200, {"hits": []})
