@@ -1,0 +1,390 @@
+{
+  "inputs": {
+    "queries_sha256": "7233fea78e6a4ab155d2ffa131fac0d91aca367736b29b7f77d1d11610a985c9",
+    "answerability_sha256": "d88826049270242f998203ff256346d78104e541894692f8dca893ded9d32605",
+    "public_corpus_sha256": "253fe3953ff1ab9b40fa136d6478fdc68520baaf0710d3118a4a8dfc2a6ec486"
+  },
+  "model": {
+    "wire_model": "nomic-embed-text:v1.5",
+    "dims": 768,
+    "ollama_image_digest": "sha256:1bef639749741b375e9a1eb2c1346fb57ce52f5432de1f74846e44ccc18e1687",
+    "weights_digest": "sha256:970aa74c0a90ef7482477cf803618e776e173c007bf957f635f1015bfcfef0e6",
+    "metric": "cosine",
+    "query_prefix": "search_query: ",
+    "document_prefix": "search_document: "
+  },
+  "selection": "v1 queries.jsonl split=dev collection=public (18) + answerability.jsonl set=dev (9); held-out and challenge rows excluded",
+  "objective": "maximize correct cases; answerable correct iff value >= t, unanswerable correct iff no value or value < t",
+  "candidates": "midpoints between consecutive distinct decision values, ascending",
+  "tie_break": "wider gap, then lower midpoint",
+  "rounding": "midpoint rounded to 3 decimals",
+  "result": {
+    "correct": 24,
+    "midpoint": 0.7070456876234641,
+    "interval": [
+      0.7013191733400891,
+      0.7127722019068392
+    ],
+    "gap": 0.011453028566750123,
+    "rounded": 0.707,
+    "n": 27
+  },
+  "without_c3": {
+    "correct": 23,
+    "midpoint": 0.7070456876234641,
+    "interval": [
+      0.7013191733400891,
+      0.7127722019068392
+    ],
+    "gap": 0.011453028566750123,
+    "rounded": 0.707,
+    "n": 26
+  },
+  "answerable_value_range": [
+    0.596623939834762,
+    0.8707881751268073
+  ],
+  "cases": [
+    {
+      "id": "A1",
+      "source": "queries.jsonl",
+      "expect": "answer",
+      "collection": "public",
+      "documents": [
+        "paid-leave-policy.md"
+      ],
+      "value": 0.8647999031677436,
+      "value_from": "max over labeled documents",
+      "best_document": "paid-leave-policy.md",
+      "correct_at_cutoff": true
+    },
+    {
+      "id": "A2",
+      "source": "queries.jsonl",
+      "expect": "answer",
+      "collection": "public",
+      "documents": [
+        "security-badge-policy.md"
+      ],
+      "value": 0.8065851921128292,
+      "value_from": "max over labeled documents",
+      "best_document": "security-badge-policy.md",
+      "correct_at_cutoff": true
+    },
+    {
+      "id": "A4",
+      "source": "queries.jsonl",
+      "expect": "answer",
+      "collection": "public",
+      "documents": [
+        "it-equipment-policy.md"
+      ],
+      "value": 0.8707881751268073,
+      "value_from": "max over labeled documents",
+      "best_document": "it-equipment-policy.md",
+      "correct_at_cutoff": true
+    },
+    {
+      "id": "A6",
+      "source": "queries.jsonl",
+      "expect": "answer",
+      "collection": "public",
+      "documents": [
+        "data-retention-policy.md"
+      ],
+      "value": 0.8451485350523279,
+      "value_from": "max over labeled documents",
+      "best_document": "data-retention-policy.md",
+      "correct_at_cutoff": true
+    },
+    {
+      "id": "B1",
+      "source": "queries.jsonl",
+      "expect": "answer",
+      "collection": "public",
+      "documents": [
+        "security-badge-policy.md"
+      ],
+      "value": 0.7615255065992544,
+      "value_from": "max over labeled documents",
+      "best_document": "security-badge-policy.md",
+      "correct_at_cutoff": true
+    },
+    {
+      "id": "B2",
+      "source": "queries.jsonl",
+      "expect": "answer",
+      "collection": "public",
+      "documents": [
+        "remote-work-policy.md"
+      ],
+      "value": 0.7392476527049165,
+      "value_from": "max over labeled documents",
+      "best_document": "remote-work-policy.md",
+      "correct_at_cutoff": true
+    },
+    {
+      "id": "B4",
+      "source": "queries.jsonl",
+      "expect": "answer",
+      "collection": "public",
+      "documents": [
+        "parental-leave-policy.md"
+      ],
+      "value": 0.596623939834762,
+      "value_from": "max over labeled documents",
+      "best_document": "parental-leave-policy.md",
+      "correct_at_cutoff": false
+    },
+    {
+      "id": "B6",
+      "source": "queries.jsonl",
+      "expect": "answer",
+      "collection": "public",
+      "documents": [
+        "meeting-room-policy.md"
+      ],
+      "value": 0.7266826084695784,
+      "value_from": "max over labeled documents",
+      "best_document": "meeting-room-policy.md",
+      "correct_at_cutoff": true
+    },
+    {
+      "id": "B8",
+      "source": "queries.jsonl",
+      "expect": "answer",
+      "collection": "public",
+      "documents": [
+        "performance-review-policy.md"
+      ],
+      "value": 0.7818570963861754,
+      "value_from": "max over labeled documents",
+      "best_document": "performance-review-policy.md",
+      "correct_at_cutoff": true
+    },
+    {
+      "id": "B10",
+      "source": "queries.jsonl",
+      "expect": "answer",
+      "collection": "public",
+      "documents": [
+        "code-of-conduct.md"
+      ],
+      "value": 0.7127722019068392,
+      "value_from": "max over labeled documents",
+      "best_document": "code-of-conduct.md",
+      "correct_at_cutoff": true
+    },
+    {
+      "id": "C1",
+      "source": "queries.jsonl",
+      "expect": "answer",
+      "collection": "public",
+      "documents": [
+        "sick-leave-policy.md"
+      ],
+      "value": 0.7175958287032078,
+      "value_from": "max over labeled documents",
+      "best_document": "sick-leave-policy.md",
+      "correct_at_cutoff": true
+    },
+    {
+      "id": "C3",
+      "source": "queries.jsonl",
+      "expect": "answer",
+      "collection": "public",
+      "documents": [
+        "remote-work-policy.md"
+      ],
+      "value": 0.7792080643773494,
+      "value_from": "max over labeled documents",
+      "best_document": "remote-work-policy.md",
+      "correct_at_cutoff": true
+    },
+    {
+      "id": "C5",
+      "source": "queries.jsonl",
+      "expect": "answer",
+      "collection": "public",
+      "documents": [
+        "data-retention-policy.md"
+      ],
+      "value": 0.7186682723407294,
+      "value_from": "max over labeled documents",
+      "best_document": "data-retention-policy.md",
+      "correct_at_cutoff": true
+    },
+    {
+      "id": "D1",
+      "source": "queries.jsonl",
+      "expect": "answer",
+      "collection": "public",
+      "documents": [
+        "paid-leave-policy.md",
+        "parental-leave-policy.md",
+        "sick-leave-policy.md"
+      ],
+      "value": 0.7180045956750074,
+      "value_from": "max over labeled documents",
+      "best_document": "paid-leave-policy.md",
+      "correct_at_cutoff": true
+    },
+    {
+      "id": "D3",
+      "source": "queries.jsonl",
+      "expect": "answer",
+      "collection": "public",
+      "documents": [
+        "it-equipment-policy.md",
+        "remote-work-policy.md"
+      ],
+      "value": 0.6509029330469559,
+      "value_from": "max over labeled documents",
+      "best_document": "remote-work-policy.md",
+      "correct_at_cutoff": false
+    },
+    {
+      "id": "D5",
+      "source": "queries.jsonl",
+      "expect": "answer",
+      "collection": "public",
+      "documents": [
+        "code-of-conduct.md",
+        "security-badge-policy.md"
+      ],
+      "value": 0.7575399076526846,
+      "value_from": "max over labeled documents",
+      "best_document": "code-of-conduct.md",
+      "correct_at_cutoff": true
+    },
+    {
+      "id": "E1",
+      "source": "queries.jsonl",
+      "expect": "decline",
+      "collection": "public",
+      "documents": [],
+      "value": 0.6007587555148084,
+      "value_from": "max over all public documents",
+      "best_document": "remote-work-policy.md",
+      "correct_at_cutoff": true
+    },
+    {
+      "id": "E3",
+      "source": "queries.jsonl",
+      "expect": "decline",
+      "collection": "public",
+      "documents": [],
+      "value": 0.5284345032158014,
+      "value_from": "max over all public documents",
+      "best_document": "travel-booking-policy.md",
+      "correct_at_cutoff": true
+    },
+    {
+      "id": "X1",
+      "source": "answerability.jsonl",
+      "expect": "answer",
+      "collection": "public",
+      "documents": [
+        "paid-leave-policy.md"
+      ],
+      "value": 0.8382483810029208,
+      "value_from": "max over labeled documents",
+      "best_document": "paid-leave-policy.md",
+      "correct_at_cutoff": true
+    },
+    {
+      "id": "X2",
+      "source": "answerability.jsonl",
+      "expect": "answer",
+      "collection": "public",
+      "documents": [
+        "expense-reimbursement.md"
+      ],
+      "value": 0.7735283651002475,
+      "value_from": "max over labeled documents",
+      "best_document": "expense-reimbursement.md",
+      "correct_at_cutoff": true
+    },
+    {
+      "id": "X3",
+      "source": "answerability.jsonl",
+      "expect": "answer",
+      "collection": "public",
+      "documents": [
+        "security-badge-policy.md"
+      ],
+      "value": 0.696707537659477,
+      "value_from": "max over labeled documents",
+      "best_document": "security-badge-policy.md",
+      "correct_at_cutoff": false
+    },
+    {
+      "id": "X4",
+      "source": "answerability.jsonl",
+      "expect": "answer",
+      "collection": "public",
+      "documents": [
+        "parental-leave-policy.md"
+      ],
+      "value": 0.8476381936238884,
+      "value_from": "max over labeled documents",
+      "best_document": "parental-leave-policy.md",
+      "correct_at_cutoff": true
+    },
+    {
+      "id": "N1",
+      "source": "answerability.jsonl",
+      "expect": "decline",
+      "collection": "public",
+      "documents": [],
+      "value": 0.7013191733400891,
+      "value_from": "max over all public documents",
+      "best_document": "sick-leave-policy.md",
+      "correct_at_cutoff": true
+    },
+    {
+      "id": "N2",
+      "source": "answerability.jsonl",
+      "expect": "decline",
+      "collection": "public",
+      "documents": [],
+      "value": 0.680097155582513,
+      "value_from": "max over all public documents",
+      "best_document": "remote-work-policy.md",
+      "correct_at_cutoff": true
+    },
+    {
+      "id": "N3",
+      "source": "answerability.jsonl",
+      "expect": "decline",
+      "collection": "public",
+      "documents": [],
+      "value": 0.6924764483308696,
+      "value_from": "max over all public documents",
+      "best_document": "remote-work-policy.md",
+      "correct_at_cutoff": true
+    },
+    {
+      "id": "N4",
+      "source": "answerability.jsonl",
+      "expect": "decline",
+      "collection": "public",
+      "documents": [],
+      "value": 0.6160755853128723,
+      "value_from": "max over all public documents",
+      "best_document": "code-of-conduct.md",
+      "correct_at_cutoff": true
+    },
+    {
+      "id": "N5",
+      "source": "answerability.jsonl",
+      "expect": "decline",
+      "collection": "empty",
+      "documents": [],
+      "value": null,
+      "value_from": "empty collection: no passage",
+      "best_document": null,
+      "correct_at_cutoff": true
+    }
+  ]
+}

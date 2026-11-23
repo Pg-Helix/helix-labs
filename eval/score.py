@@ -203,6 +203,11 @@ class Scorer:
                         self.err(label, f"provider mismatch: {side}.{k}={got.get(k)!r}, want {v!r}")
             if prov.get("reranker") != want["reranker"]:
                 self.err(label, f"provider mismatch: reranker={prov.get('reranker')!r}, want {want['reranker']!r}")
+            # The served /answers rule as cortex resolved it at startup
+            # (embedconfig.Resolve): calibrated only for the real profile.
+            want_rule = "answer_rule=none" if label == "mock" else "answer_rule=cosine>=0.707"
+            if want_rule not in (prov.get("resolved_profile") or ""):
+                self.err(label, f"resolved embedding profile {prov.get('resolved_profile')!r} lacks {want_rule}")
             if label != "mock":
                 art = prov.get("model_artifact") or {}
                 if not art.get("weights_digest") or art.get("weights_digest") != art.get("pinned_digest"):

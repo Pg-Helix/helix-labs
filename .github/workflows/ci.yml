@@ -101,6 +101,8 @@ jobs:
           path: helix-labs
       - run: sh helix-labs/prepare-checkouts.sh
       - run: docker buildx use default && docker compose version && docker buildx version
+      - name: Replay the /answers threshold calibration (pinned model, dev cases only)
+        run: CALIBRATION_OUT="$GITHUB_WORKSPACE/eval-out/calibration-replay.json" sh helix-labs/eval/calibrate.sh
       - name: Mock pass (plumbing baseline)
         run: cd helix-labs/eval && sh run-eval.sh mock
         env:

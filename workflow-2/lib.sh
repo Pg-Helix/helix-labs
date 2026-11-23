@@ -162,12 +162,17 @@ wf2_verify_provider() {
     _api_env=$(wf2_container_env cortex-api)
     _worker_env=$(wf2_container_env chunk-worker)
     _manifest="" _pinned=""
+    # The profile each service RESOLVED at startup (helix-cortex
+    # embedconfig.Resolve logs it), not just the env it was given.
+    _api_profile=$($COMPOSE logs --no-log-prefix cortex-api 2>/dev/null | grep -o 'embedding profile: .*' | tail -1 || true)
+    _worker_profile=$($COMPOSE logs --no-log-prefix chunk-worker 2>/dev/null | grep -o 'embedding profile: .*' | tail -1 || true)
     if [ "$WF2_EXPECT_PROFILE" = "real" ]; then
         _manifest=$($COMPOSE exec -T ollama cat /root/.ollama/models/manifests/registry.ollama.ai/library/nomic-embed-text/v1.5 2>/dev/null || true)
         _pinned=$(sed -n 's/^ARG MODEL_WEIGHTS_DIGEST=//p' "$COMPOSE_DIR/../images/ollama/Dockerfile")
     fi
     API_ENV="$_api_env" WORKER_ENV="$_worker_env" OLLAMA_MANIFEST="$_manifest" PINNED_DIGEST="$_pinned" \
     EXPECT_PROFILE="$WF2_EXPECT_PROFILE" EXPECT_DISABLE_RERANK="${CORTEX_DISABLE_RERANK:-0}" \
+    API_PROFILE="$_api_profile" WORKER_PROFILE="$_worker_profile" \
         python3 - "$WF2_TMP/provider.json" <<'EOF'
 import json, os, sys
 def env(name):
@@ -197,8 +202,11 @@ rec = {
     "reranker": "disabled" if api.get("CORTEX_DISABLE_RERANK") == "1" else "enabled",
     "preprocessing": {"query_prefix": prefix[0], "document_prefix": prefix[1]},
     "model_artifact": {"weights_digest": digest, "pinned_digest": pinned},
+    "resolved_profile": os.environ["API_PROFILE"].removeprefix("embedding profile: ") or None,
 }
 errs = []
+if not os.environ["API_PROFILE"] or os.environ["API_PROFILE"] != os.environ["WORKER_PROFILE"]:
+    errs.append(f"resolved profiles differ or are missing: cortex-api {os.environ['API_PROFILE']!r} / chunk-worker {os.environ['WORKER_PROFILE']!r}")
 if q["model_id"] != w["model_id"] or q["dims"] != w["dims"] or q["provider"] != w["provider"]:
     errs.append("query embedder and chunk worker disagree")
 if profile == "real":
@@ -208,11 +216,15 @@ if profile == "real":
         for k, v in exp.items():
             if s[k] != v:
                 errs.append(f"{name} {k}={s[k]!r}, want {v!r}")
+    if "answer_rule=cosine>=0.707" not in (rec["resolved_profile"] or ""):
+        errs.append(f"real profile without the calibrated answer rule: {rec['resolved_profile']!r}")
     if not digest or digest != pinned:
         errs.append(f"ollama weights digest {digest!r} != pinned {pinned!r}")
 else:
     if q["provider"] != "mock" or w["provider"] != "mock":
         errs.append(f"mock profile requested but providers are {q['provider']}/{w['provider']}")
+    if "answer_rule=none" not in (rec["resolved_profile"] or ""):
+        errs.append(f"mock profile with an answer rule: {rec['resolved_profile']!r}")
 if (rec["reranker"] == "disabled") != want_off:
     errs.append(f"reranker is {rec['reranker']} but CORTEX_DISABLE_RERANK={int(want_off)} was requested")
 json.dump(rec, open(sys.argv[1], "w"), indent=2)

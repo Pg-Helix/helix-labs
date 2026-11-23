@@ -78,7 +78,9 @@ class Pass:
         embed = {"provider": "mock", "wire_model": None, "model_id": "local-mock-embed", "model_revision": "chunk-v1", "dims": 8}
         if self.profile != "mock":
             embed = dict(REAL)
+        rule = "none" if self.profile == "mock" else "cosine>=0.707"
         return {"profile": self.profile.split("-")[0], "query_embedding": embed, "chunk_worker": dict(embed),
+                "resolved_profile": f"provider={embed['provider']} model={embed['model_id']}:{embed['model_revision']} answer_rule={rule}",
                 "reranker": "disabled" if self.profile == "real-norerank" else "enabled",
                 "model_artifact": {"weights_digest": DIGEST if self.profile != "mock" else None,
                                    "pinned_digest": DIGEST if self.profile != "mock" else None}}
@@ -232,6 +234,10 @@ class ScoreCLI(unittest.TestCase):
     def test_mismatched_provenance_fails(self):
         self.real.meta["revisions"]["helix-cortex"]["commit"] = "1" * 40
         self.assertFails(None, "provenance: passes ran against different revisions")
+
+    def test_real_pass_without_the_calibrated_rule_fails(self):
+        self.real.meta["provider"]["resolved_profile"] = "provider=mock model=nomic-embed-text:v1.5 answer_rule=none"
+        self.assertFails(None, "real: resolved embedding profile", "lacks answer_rule=cosine>=0.707")
 
     def test_provider_mismatch_fails(self):
         self.real.meta["provider"]["chunk_worker"]["model_id"] = "local-mock-embed"
@@ -427,6 +433,38 @@ class ScoreCLI(unittest.TestCase):
         self.real.responses["C3__final"] = self.real.responses["C3__dense-only"] = (200, self.real.results([]))
         self.real.responses["C3__answer"] = (200, "{not json")
         self.assertFails(None, "real/C3/answer: malformed JSON")
+
+
+class Calibration(unittest.TestCase):
+    """calibrate.py's selection and cutoff rule, offline (the replay itself
+    needs the pinned model: eval/calibrate.sh)."""
+
+    def setUp(self):
+        sys.path.insert(0, str(EVAL))
+        import calibrate
+        self.cal = calibrate
+
+    def test_selects_the_27_development_cases_only(self):
+        cases = self.cal.select_cases()
+        ids = [c["id"] for c in cases]
+        self.assertEqual(len(ids), 27)
+        self.assertEqual(ids, [c["id"] for c in json.loads((EVAL / "calibration.json").read_text())["cases"]])
+        held = {q["id"] for q in QUERIES if q["split"] != "dev" or q["collection"] != "public"}
+        challenge = {a["id"] for a in ANSWERABILITY if a["set"] != "dev"}
+        self.assertFalse(set(ids) & (held | challenge))
+
+    def test_cutoff_rule_objective_then_widest_gap(self):
+        cases = [{"expect": "answer", "value": v} for v in (0.80, 0.75)] + \
+                [{"expect": "decline", "value": v} for v in (0.60, 0.70)] + [{"expect": "decline", "value": None}]
+        best = self.cal.select_cutoff(cases)
+        self.assertEqual((best["correct"], best["interval"], best["rounded"]), (5, [0.70, 0.75], 0.725))
+
+    def test_committed_record_states_the_served_cutoff(self):
+        r = json.loads((EVAL / "calibration.json").read_text())
+        self.assertEqual((r["result"]["rounded"], r["result"]["correct"], r["result"]["n"]), (0.707, 24, 27))
+        self.assertAlmostEqual(r["result"]["midpoint"], 0.7070457, places=7)
+        self.assertEqual(r["inputs"]["queries_sha256"], sha((EVAL / "queries.jsonl").read_bytes()))
+        self.assertEqual(r["inputs"]["answerability_sha256"], sha((EVAL / "answerability.jsonl").read_bytes()))
 
 
 class Plan(unittest.TestCase):

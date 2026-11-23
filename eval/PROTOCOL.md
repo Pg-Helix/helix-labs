@@ -238,3 +238,26 @@ The v1 corpus, queries, labels, splits and every threshold above are unchanged.
   a boolean dirty flag, and its executed-request count must equal the request plan. C3's
   responses are still validated although its defective label keeps it out of the
   metrics.
+
+## Revision 2026-11-23: calibration record
+
+The v1 corpus, queries, labels, splits, thresholds and gates are unchanged, and so is the
+served cutoff.
+
+- **Replay.** `sh eval/calibrate.sh` (after `prepare-checkouts.sh`) replays the `/answers`
+  threshold selection from the repository against helix-foundry's pinned Ollama image. The
+  script refuses to run if the served weights digest differs from the pin. It selects the 27
+  development cases before any embedding call (v1 dev split on the public collection plus
+  `answerability.jsonl` dev). It must reproduce the committed `eval/calibration.json`, which
+  holds the input hashes, model and runtime pins, prefixes, every per-case value, the
+  objective, the tie-break and the rounding. The result is midpoint 0.7070457, rounded to
+  0.707, with 24/27 correct on the document-level measure (23/26 without C3; C3 counts by
+  document name). CI's real-model-eval job runs the replay first.
+- **What the measure covers.** The calibration measure is document-level: does a labeled
+  document clear the cutoff, or does every document stay below it. It does not score whether
+  the assembled answer is complete or free of unrelated extracts. Neither does the served
+  "correct answer" class: it requires one cited labeled passage and an expected snippet. The
+  positive controls and the no_answer gate are valid under those stated criteria.
+- **Resolved profile.** Each pass's `run.json` now records the embedding profile Cortex
+  resolved at startup. cortex-api and chunk-worker must log the same one. Real passes must show
+  the calibrated rule (`answer_rule=cosine>=0.707`) and mock passes `answer_rule=none`.
