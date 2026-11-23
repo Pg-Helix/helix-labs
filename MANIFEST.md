@@ -17,7 +17,7 @@ only one row per repo below, and it is what both acceptance gates are tested aga
 
 | repo | branch | commit | PR |
 |---|---|---|---|
-| helix-atlas | decisions/workflow2-ingestion-retrieval (stacked on k2-k3-security-corrections) | `698b528c182dd87e15436276bb8d55860e05ca28` | [#11](https://github.com/Pg-Helix/helix-atlas/pull/11) |
+| helix-atlas | decisions/workflow2-ingestion-retrieval (stacked on k2-k3-security-corrections) | `d2e6c632a11403c982daaa6255df902b30e8975d` | [#11](https://github.com/Pg-Helix/helix-atlas/pull/11) |
 | helix-protocol | feat/workflow2-contract (stacked on k2-k3-contract-sync) | `9ada018776e9834388b9fd6ae19ff16b644efc5c` | [#7](https://github.com/Pg-Helix/helix-protocol/pull/7) |
 | helix-kernel | feat/extension-skeleton (foundation, base of the two below) | `5de26ffac8bc7eb6b7d50cd2793a87c352fffc5c` | [#3](https://github.com/Pg-Helix/helix-kernel/pull/3) |
 | helix-kernel | feat/k2-registration | `e2528cdf2b74edbe5be76cd5ad7ffb9a88a8ebf8` | [#6](https://github.com/Pg-Helix/helix-kernel/pull/6) |
@@ -26,7 +26,7 @@ only one row per repo below, and it is what both acceptance gates are tested aga
 | helix-infer | feat/i1-provider-interface | `444d5213ccb97dfb7dd438db689c93b646dd505c` | [#5](https://github.com/Pg-Helix/helix-infer/pull/5) |
 | helix-infer | feat/real-embedding-provider (stacked on feat/i1-provider-interface) | `b577bff4e6a34fb41bcd48611688efcf25249b54` | [#6](https://github.com/Pg-Helix/helix-infer/pull/6) |
 | helix-cortex | feat/workflow2-ingestion-retrieval (stacked on feat/c1-worker; serves both workflows) | `ec6df64af9ce41009e57e046d28903012b45f875` | [#5](https://github.com/Pg-Helix/helix-cortex/pull/5) |
-| helix-cortex | feat/real-embedding-provider (stacked on feat/workflow2-ingestion-retrieval; serves all three workflows/milestones) | `57686ce8da1fd570770301062edfe68cbc9fa891` | [#6](https://github.com/Pg-Helix/helix-cortex/pull/6) |
+| helix-cortex | feat/real-embedding-provider (stacked on feat/workflow2-ingestion-retrieval; serves all three workflows/milestones) | `4ab62cbdfbf8bac0bef6c275d5a08baa3d3a913b` | [#6](https://github.com/Pg-Helix/helix-cortex/pull/6) |
 | helix-foundry | feat/workflow2-pgvector (stacked on feat/phase1-local-stack; serves both workflows) | `85637c8068427329ec32622b1954b852a48bbd72` | [#5](https://github.com/Pg-Helix/helix-foundry/pull/5) |
 | helix-foundry | feat/real-embedding-provider (stacked on feat/workflow2-pgvector) | `18dffc19bb9cb79fbd83f9250e21682dd5936f9c` | [#6](https://github.com/Pg-Helix/helix-foundry/pull/6) |
 | helix-labs | feat/workflow1-demo | this repo's own current `HEAD` -- not pinned here, since a commit adding/editing this file cannot name its own final SHA in advance | [#4](https://github.com/Pg-Helix/helix-labs/pull/4) |
@@ -44,7 +44,7 @@ history; this section is what is built and tested.
 |---|---|
 | helix-foundry | `18dffc19bb9cb79fbd83f9250e21682dd5936f9c` |
 | helix-kernel | `0f5bec3ee5f5f9506d0be87c1bec856836d10080` |
-| helix-cortex | `57686ce8da1fd570770301062edfe68cbc9fa891` |
+| helix-cortex | `4ab62cbdfbf8bac0bef6c275d5a08baa3d3a913b` |
 
 helix-protocol and helix-infer are not checked out separately: helix-cortex's
 `go.mod`/`go.sum` pin them inside the cortex image build (`eval/run-eval.sh` records
@@ -61,6 +61,7 @@ git clone -b feat/real-embedding-eval https://github.com/Pg-Helix/helix-labs.git
 sh helix-labs/prepare-checkouts.sh       # clones/pins helix-foundry, helix-kernel, helix-cortex
 export COMPOSE_BAKE=false                # classic builder; see ci.yml
 python3 -m unittest -v helix-labs/eval/test_score.py   # offline, seconds
+sh helix-labs/eval/calibrate.sh        # replays the /answers cutoff (0.707) on the pinned model
 cd helix-labs/workflow-1 && sh acceptance.sh
 cd ../workflow-2 && sh acceptance.sh && sh version-change.sh
 cd ../eval && sh run-eval.sh mock && sh run-eval.sh real && sh run-eval.sh real-norerank
