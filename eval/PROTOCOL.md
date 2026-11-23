@@ -253,6 +253,12 @@ served cutoff.
   objective, the tie-break and the rounding. The result is midpoint 0.7070457, rounded to
   0.707, with 24/27 correct on the document-level measure (23/26 without C3; C3 counts by
   document name). CI's real-model-eval job runs the replay first.
+- **Across CPU architectures.** The record was made on arm64. The same pinned weights on
+  GitHub's x86_64 runner give values up to 4.7e-4 different: the midpoint is 0.7072474 instead
+  of 0.7070457, with the same 24/27, the same rounded 0.707 and every case on the same side of
+  it. The case closest to the cutoff (N1) is 5.7e-3 away. A replay must therefore match the
+  record exactly in case selection, each case's side of 0.707, the correct count and the
+  rounded cutoff, and match its decision values within 1e-3.
 - **What the measure covers.** The calibration measure is document-level: does a labeled
   document clear the cutoff, or does every document stay below it. It does not score whether
   the assembled answer is complete or free of unrelated extracts. Neither does the served

@@ -20,8 +20,9 @@ Steps, in this order:
      gap, then the lower midpoint. The served cutoff is the midpoint
      rounded to 3 decimals.
 The replay must reproduce the committed record (calibration.json): same
-case ids, same correct count, same rounded cutoff, and every decision value
-within VALUE_TOLERANCE. Exit 0 = reproduced, 1 = differs, 2 = could not run.
+case ids, every case on the same side of the served cutoff, same correct
+count, same rounded cutoff, and every decision value within
+VALUE_TOLERANCE. Exit 0 = reproduced, 1 = differs, 2 = could not run.
 """
 import argparse
 import hashlib
@@ -36,7 +37,11 @@ EVAL = pathlib.Path(__file__).resolve().parent
 QUERY_PREFIX, DOCUMENT_PREFIX = "search_query: ", "search_document: "
 WIRE_MODEL = "nomic-embed-text:v1.5"
 SERVED_CUTOFF = 0.707          # helix-cortex embedconfig calibrations
-VALUE_TOLERANCE = 1e-4         # CPU float differences across hosts
+# Same weights, different CPU kernels: the arm64 record and an x86_64
+# GitHub runner replay differed by up to 4.7e-4 per value (Labs CI run
+# 45146471920). The closest case to the cutoff is 5.7e-3 away, so this
+# cannot flip a decision; decisions themselves must match exactly.
+VALUE_TOLERANCE = 1e-3
 
 
 def sha256(b):
@@ -97,6 +102,7 @@ def main():
     ap.add_argument("--dockerfile", required=True, help="helix-foundry/images/ollama/Dockerfile (the pins)")
     ap.add_argument("--out", required=True, help="where to write this replay's full record")
     ap.add_argument("--record", default=str(EVAL / "calibration.json"), help="committed record to reproduce")
+    ap.add_argument("--arch", default=None, help="architecture the model ran on (recorded, not compared)")
     args = ap.parse_args()
 
     # 1. selection first -- nothing below can influence it.
@@ -142,6 +148,7 @@ def main():
         "model": {"wire_model": WIRE_MODEL, "dims": len(next(iter(doc_vec.values()))),
                   "ollama_image_digest": pin("OLLAMA_IMAGE_DIGEST"), "weights_digest": served_weights,
                   "metric": "cosine", "query_prefix": QUERY_PREFIX, "document_prefix": DOCUMENT_PREFIX},
+        "runtime_arch": args.arch,
         "selection": "v1 queries.jsonl split=dev collection=public (18) + answerability.jsonl set=dev (9); held-out and challenge rows excluded",
         "objective": "maximize correct cases; answerable correct iff value >= t, unanswerable correct iff no value or value < t",
         "candidates": "midpoints between consecutive distinct decision values, ascending",
@@ -174,6 +181,11 @@ def main():
         for o, n in zip(old["cases"], record["cases"]):
             if (o["value"] is None) != (n["value"] is None) or (o["value"] is not None and abs(o["value"] - n["value"]) > VALUE_TOLERANCE):
                 problems.append(f"{n['id']} value {n['value']} != recorded {o['value']}")
+        for o, n in zip(old["cases"], record["cases"]):
+            if correct(o, SERVED_CUTOFF) != correct(n, SERVED_CUTOFF):
+                problems.append(f"{n['id']} lands on the other side of {SERVED_CUTOFF} than recorded")
+        if old.get("runtime_arch") != record["runtime_arch"]:
+            print(f"note: recorded on {old.get('runtime_arch')}, replayed on {record['runtime_arch']}; values compared within {VALUE_TOLERANCE}")
         if (old["result"]["correct"], old["result"]["rounded"]) != (best["correct"], best["rounded"]):
             problems.append(f"result {best['correct']}/{best['rounded']} != recorded {old['result']['correct']}/{old['result']['rounded']}")
     else:

@@ -29,4 +29,4 @@ until curl -sf "http://127.0.0.1:$PORT/api/tags" >/dev/null; do
 done
 docker exec "$CID" cat /root/.ollama/models/manifests/registry.ollama.ai/library/nomic-embed-text/v1.5 > "$T/manifest.json"
 python3 "$EVAL_DIR/calibrate.py" --url "http://127.0.0.1:$PORT" --manifest "$T/manifest.json" \
-    --dockerfile "$OLLAMA_DIR/Dockerfile" --out "$OUT"
+    --dockerfile "$OLLAMA_DIR/Dockerfile" --out "$OUT" --arch "$(docker version -f '{{.Server.Arch}}')"

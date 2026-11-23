@@ -13,6 +13,7 @@
     "query_prefix": "search_query: ",
     "document_prefix": "search_document: "
   },
+  "runtime_arch": "arm64",
   "selection": "v1 queries.jsonl split=dev collection=public (18) + answerability.jsonl set=dev (9); held-out and challenge rows excluded",
   "objective": "maximize correct cases; answerable correct iff value >= t, unanswerable correct iff no value or value < t",
   "candidates": "midpoints between consecutive distinct decision values, ascending",
