@@ -88,8 +88,9 @@ api POST "/collections/$COL1/documents" "$ALICE_TOKEN" '{"tenant":"acme","name":
 PID_A=$!
 api POST "/collections/$COL1/documents" "$ALICE_TOKEN" '{"tenant":"acme","name":"doc.md","content_type":"text/markdown","content":"Employees accrue fifteen days of paid leave per year."}' $WF2_TMP/dup_b.json > $WF2_TMP/dup_b.code &
 PID_B=$!
-wait "$PID_A" || true; CODE_A=$(cat $WF2_TMP/dup_a.code 2>/dev/null || true)
-wait "$PID_B" || true; CODE_B=$(cat $WF2_TMP/dup_b.code 2>/dev/null || true)
+# Reap both children; a failed transfer is never read as its status line.
+bg_reap "$PID_A" $WF2_TMP/dup_a.code; CODE_A=$BG_STATUS
+bg_reap "$PID_B" $WF2_TMP/dup_b.code; CODE_B=$BG_STATUS
 if [ "$CODE_A" = "201" ] && [ "$CODE_B" = "201" ]; then
     echo "ok: both concurrent duplicate-content requests succeeded (http $CODE_A, http $CODE_B)"
 else
@@ -113,8 +114,9 @@ api POST "/collections/$COL1/documents" "$ALICE_TOKEN" '{"tenant":"acme","name":
 PID_A=$!
 api POST "/collections/$COL1/documents" "$ALICE_TOKEN" '{"tenant":"acme","name":"race-first-create.md","content_type":"text/markdown","content":"first creation race content."}' $WF2_TMP/race_b.json > $WF2_TMP/race_b.code &
 PID_B=$!
-wait "$PID_A" || true; RACE_CODE_A=$(cat $WF2_TMP/race_a.code 2>/dev/null || true)
-wait "$PID_B" || true; RACE_CODE_B=$(cat $WF2_TMP/race_b.code 2>/dev/null || true)
+# Reap both children; a failed transfer is never read as its status line.
+bg_reap "$PID_A" $WF2_TMP/race_a.code; RACE_CODE_A=$BG_STATUS
+bg_reap "$PID_B" $WF2_TMP/race_b.code; RACE_CODE_B=$BG_STATUS
 if [ "$RACE_CODE_A" = "201" ] && [ "$RACE_CODE_B" = "201" ]; then
     echo "ok: both concurrent first-creation requests succeeded, not a raw conflict error (http $RACE_CODE_A, http $RACE_CODE_B)"
 else
@@ -153,8 +155,9 @@ api POST "/collections/$COL1/documents" "$ALICE_TOKEN" '{"tenant":"acme","name":
 PID_A=$!
 api POST "/collections/$COL1/documents" "$ALICE_TOKEN" '{"tenant":"acme","name":"doc.md","content_type":"text/markdown","content":"CONTENT B: forty days of sick leave per year."}' $WF2_TMP/compete_b.json > $WF2_TMP/compete_b.code &
 PID_B=$!
-wait "$PID_A" || true; COMPETE_CODE_A=$(cat $WF2_TMP/compete_a.code 2>/dev/null || true)
-wait "$PID_B" || true; COMPETE_CODE_B=$(cat $WF2_TMP/compete_b.code 2>/dev/null || true)
+# Reap both children; a failed transfer is never read as its status line.
+bg_reap "$PID_A" $WF2_TMP/compete_a.code; COMPETE_CODE_A=$BG_STATUS
+bg_reap "$PID_B" $WF2_TMP/compete_b.code; COMPETE_CODE_B=$BG_STATUS
 if [ "$COMPETE_CODE_A" = "201" ] && [ "$COMPETE_CODE_B" = "201" ]; then
     echo "ok: both competing-content updates succeeded (http $COMPETE_CODE_A, http $COMPETE_CODE_B)"
 else
@@ -369,7 +372,12 @@ INFLIGHT_PID=$!
 i=0
 arrived=0
 while true; do
-    ARRIVED=$(curl -s "$API/__test/barrier/$BARRIER_TOKEN/status" | python3 -c "import sys,json; print(json.load(sys.stdin)['arrived'])" 2>/dev/null || echo False)
+    # Readiness counts only from a completed transfer; a failed poll is
+    # retried, never parsed.
+    ARRIVED=False
+    if STATUS_BODY=$(curl -sf --max-time 5 "$API/__test/barrier/$BARRIER_TOKEN/status"); then
+        ARRIVED=$(printf '%s' "$STATUS_BODY" | python3 -c "import sys,json; print(json.load(sys.stdin)['arrived'])" 2>/dev/null || echo False)
+    fi
     if [ "$ARRIVED" = "True" ]; then
         arrived=1
         break
@@ -392,8 +400,8 @@ code=$(api DELETE "/collections/$COL1/permissions/bob" "$ALICE_TOKEN")
 expect_code "revoke bob while the other request is paused" 204 "$code"
 
 curl -s -o /dev/null -X POST "$API/__test/barrier/$BARRIER_TOKEN/release"
-wait "$INFLIGHT_PID" || true
-INFLIGHT_HTTP=$(cat $WF2_TMP/inflight_code.txt 2>/dev/null || echo "")
+bg_reap "$INFLIGHT_PID" $WF2_TMP/inflight_code.txt
+INFLIGHT_HTTP=$BG_STATUS
 INFLIGHT_BODY=$(cat $WF2_TMP/inflight_response.json 2>/dev/null || echo "")
 # The resumed request re-checks bob's grant in a fresh snapshot
 # (store.Answer's requireRole) and must be denied outright.

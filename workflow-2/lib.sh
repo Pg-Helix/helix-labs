@@ -44,7 +44,10 @@ else
     WF2_EXPECT_PROFILE=mock
 fi
 
-API="http://127.0.0.1:${HELIX_CORTEX_API_PORT:-55480}/v1"
+# WF2_API_URL is test-only: it routes every request through something
+# else (e.g. a fault-injecting loopback proxy) while Compose still
+# publishes cortex-api on HELIX_CORTEX_API_PORT.
+API=${WF2_API_URL:-"http://127.0.0.1:${HELIX_CORTEX_API_PORT:-55480}/v1"}
 
 # token_for PRINCIPAL: reads the opaque token the local auth fixture
 # mapped to PRINCIPAL -- this suite never invents its own tokens, it
@@ -87,6 +90,36 @@ api() {
         printf '%s' "$_body" | curl "$@" -H "Content-Type: application/json" -d @-
     else
         curl "$@"
+    fi
+}
+
+# record_request DIR NAME METHOD PATH TOKEN BODY [EXTRA_HEADER]: one
+# evaluated request. Writes DIR/NAME.json (body), DIR/NAME.code (HTTP
+# status) and DIR/NAME.curl (curl's own exit status). Succeeds only if
+# the transfer completed (curl 0) with an HTTP status: an expected status
+# and a parseable body do not prove the response arrived whole -- e.g.
+# curl 18 (connection closed before the advertised Content-Length) still
+# reports the status line it received.
+record_request() {
+    _rc=0
+    api "$3" "$4" "$5" "$6" "$1/$2.json" "${7:-}" > "$1/$2.code" || _rc=$?
+    echo "$_rc" > "$1/$2.curl"
+    [ "$_rc" -eq 0 ] && grep -Eq '^[1-5][0-9][0-9]$' "$1/$2.code"
+}
+
+# bg_reap PID CODEFILE: reaps one background request (a subshell whose
+# exit status is curl's) and sets BG_STATUS to the HTTP status in
+# CODEFILE if the transfer completed, otherwise to
+# "curl-exit-N(http X)" -- which no expected status can equal, so a
+# failed transfer fails its check even if its status line said 201/403.
+bg_reap() {
+    _rc=0
+    wait "$1" || _rc=$?
+    _http=$(cat "$2" 2>/dev/null || true)
+    if [ "$_rc" -eq 0 ]; then
+        BG_STATUS=$_http
+    else
+        BG_STATUS="curl-exit-$_rc(http ${_http:-none})"
     fi
 }
 
