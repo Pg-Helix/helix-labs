@@ -1,0 +1,309 @@
+{
+  "name": "answer-quality",
+  "version": 1,
+  "frozen": "2026-11-24",
+  "reserved": "evaluation only: never used for calibration, cutoff selection, tuning or development; changing any question, fact or quote requires a new version file",
+  "rubric": "ANSWER-QUALITY.md",
+  "served_profile": "real-norerank",
+  "collection": "public",
+  "principal": "alice",
+  "corpus": {
+    "combined_sha256": "c566fd929fbbffb3e45020aa2dde58242be37cb71aa3bcd2225211b58c5705fa",
+    "documents": {
+      "code-of-conduct.md": "0ecdb0e42f773089e546430279978cad2b0fd502e4fb4efa1066485163cc45c6",
+      "data-retention-policy.md": "55ea0ff976146941b6680ef237997609d9747ebcf8209be1fd13f3201f819b5d",
+      "expense-reimbursement.md": "71af35a10b24e8a7b155765171939a2fc5f4bb0b36ae01297d19df5a125ef40f",
+      "it-equipment-policy.md": "ac4c4dc7e1c521990adf99c70b6d2cea1887bed85f7495a8a44640536a3e0d9d",
+      "meeting-room-policy.md": "7ef35c77a75752e33396b92e68b0c186062ad14c56a05b30b65a7034bab33c89",
+      "paid-leave-policy.md": "9ce4386bcbe681879ca014b446ac47f366627d0a0b753f1ddb74a4e968c9429f",
+      "parental-leave-policy.md": "fe4bdf05b7b54e363e33a7d1e9a123d4ce0c63c80ee9e3fe3c5b89dd7882f678",
+      "parking-policy.md": "7c808be2b230e43ea9f552914980fed01f788b33138784e8f904c7217da1fc57",
+      "performance-review-policy.md": "934e6bec175a9a125ba4fcc3fa01402002975c7fe158c61b3249dcef5e83b35f",
+      "remote-work-policy.md": "8db974834d1edf241ed328b81f977ccb681c4170ff1ab186070e0c5947d12da6",
+      "security-badge-policy.md": "2f221347e3cadaa124397999cbd8b7deaa8c1098abb87bc6fd1f2470629ec578",
+      "sick-leave-policy.md": "6ef5fb06ebb89cd05bc0839ba574a85d3930ef6783251a4573d6a80fcfdbed04",
+      "travel-booking-policy.md": "280717877099c544195bb76bc1a3a0ce31b110238d194449f1fd56c91b123acb",
+      "wellness-benefit.md": "e5e07511ec4d51a34e32a3f32097d5a4c3df22811151047a2c88b2042e890086"
+    }
+  },
+  "api_limits": {
+    "max_passages": 3,
+    "max_answer_bytes": 2000,
+    "separator": " ... ",
+    "source": "helix-cortex internal/retrieval/answer.go AssembleExtractiveAnswer @ 2fcaa31"
+  },
+  "questions": [
+    {
+      "id": "AQ-S1",
+      "kind": "single_fact",
+      "expect": "answer",
+      "text": "Do I have to take all of my parental leave in one go?",
+      "facts": [
+        {
+          "id": "split",
+          "fact": "Parental leave may be one continuous block or split within the first year.",
+          "document": "parental-leave-policy.md",
+          "quote": "Parental leave may be taken in a single continuous block or split within the first year.",
+          "alternatives": []
+        }
+      ]
+    },
+    {
+      "id": "AQ-S2",
+      "kind": "single_fact",
+      "expect": "answer",
+      "text": "Am I protected if I speak up about something I honestly think is wrong at work?",
+      "facts": [
+        {
+          "id": "no-retaliation",
+          "fact": "Retaliation against someone who reports a concern in good faith is prohibited.",
+          "document": "code-of-conduct.md",
+          "quote": "Retaliation against an employee who reports a concern in good faith is strictly prohibited.",
+          "alternatives": []
+        }
+      ]
+    },
+    {
+      "id": "AQ-S3",
+      "kind": "single_fact",
+      "expect": "answer",
+      "text": "What do I need if an illness keeps me out longer than my regular sick allowance?",
+      "facts": [
+        {
+          "id": "extended-medical",
+          "fact": "Medical leave beyond ten days needs written HR approval and a physician's supporting documentation.",
+          "document": "sick-leave-policy.md",
+          "quote": "Extended medical leave beyond ten days requires written approval from Human Resources and supporting documentation from a physician.",
+          "alternatives": []
+        }
+      ]
+    },
+    {
+      "id": "AQ-S4",
+      "kind": "single_fact",
+      "expect": "answer",
+      "text": "If I don't use this month's fitness allowance, can I spend it next month instead?",
+      "facts": [
+        {
+          "id": "no-rollover",
+          "fact": "The wellness stipend does not roll over between months.",
+          "document": "wellness-benefit.md",
+          "quote": "The stipend is paid as a reimbursement and does not roll over between months.",
+          "alternatives": []
+        }
+      ]
+    },
+    {
+      "id": "AQ-M1",
+      "kind": "multi_passage",
+      "expect": "answer",
+      "text": "What am I required to report at work, and who do I report each thing to?",
+      "facts": [
+        {
+          "id": "conflicts",
+          "fact": "Conflicts of interest are disclosed to the employee's manager.",
+          "document": "code-of-conduct.md",
+          "quote": "Employees must disclose any conflicts of interest to their manager as soon as they arise.",
+          "alternatives": []
+        },
+        {
+          "id": "gifts",
+          "fact": "Vendor or client gifts over one hundred dollars are reported to compliance.",
+          "document": "code-of-conduct.md",
+          "quote": "Gifts from vendors or clients valued over one hundred dollars must be reported to compliance.",
+          "alternatives": []
+        },
+        {
+          "id": "lost-badge",
+          "fact": "Lost badges are reported to security within twenty four hours.",
+          "document": "security-badge-policy.md",
+          "quote": "Lost badges must be reported to security within twenty four hours of discovery.",
+          "alternatives": []
+        },
+        {
+          "id": "lost-equipment",
+          "fact": "Lost or damaged equipment is reported to IT immediately.",
+          "document": "it-equipment-policy.md",
+          "quote": "Lost or damaged equipment outside normal wear must be reported to IT immediately.",
+          "alternatives": []
+        }
+      ]
+    },
+    {
+      "id": "AQ-M2",
+      "kind": "multi_passage",
+      "expect": "answer",
+      "text": "On a work trip, which flights need extra sign-off and which costs need a receipt?",
+      "facts": [
+        {
+          "id": "business-class",
+          "fact": "Economy is standard under six hours; business class needs VP approval.",
+          "document": "travel-booking-policy.md",
+          "quote": "Economy class is standard for flights under six hours; business class requires VP approval.",
+          "alternatives": []
+        },
+        {
+          "id": "receipts",
+          "fact": "Receipts are required for any single expense over twenty five dollars.",
+          "document": "expense-reimbursement.md",
+          "quote": "Receipts are required for any single expense over twenty five dollars.",
+          "alternatives": []
+        }
+      ]
+    },
+    {
+      "id": "AQ-M3",
+      "kind": "multi_passage",
+      "expect": "answer",
+      "text": "What does the company do on a quarterly schedule?",
+      "facts": [
+        {
+          "id": "parking-permits",
+          "fact": "Parking permits are issued each quarter, first come first served.",
+          "document": "parking-policy.md",
+          "quote": "Parking permits are issued on a first come first served basis each quarter.",
+          "alternatives": []
+        },
+        {
+          "id": "backup-purge",
+          "fact": "Backup snapshots older than one year are purged quarterly.",
+          "document": "data-retention-policy.md",
+          "quote": "Backup snapshots older than one year are purged quarterly.",
+          "alternatives": []
+        }
+      ]
+    },
+    {
+      "id": "AQ-M4",
+      "kind": "multi_passage",
+      "expect": "answer",
+      "text": "How far ahead do I need to act when reserving a conference room, asking for planned time off, and getting review feedback in?",
+      "facts": [
+        {
+          "id": "room-booking",
+          "fact": "Meeting rooms can be booked up to two weeks in advance (facilities calendar).",
+          "document": "meeting-room-policy.md",
+          "quote": "Meeting rooms can be booked up to two weeks in advance through the facilities calendar.",
+          "alternatives": []
+        },
+        {
+          "id": "leave-notice",
+          "fact": "Planned leave requests go through the HR portal at least two weeks in advance.",
+          "document": "paid-leave-policy.md",
+          "quote": "Leave requests must be submitted through the HR portal at least two weeks in advance for planned absences.",
+          "alternatives": []
+        },
+        {
+          "id": "review-feedback",
+          "fact": "Managers submit written feedback two weeks before the review meeting.",
+          "document": "performance-review-policy.md",
+          "quote": "Managers submit written feedback two weeks before the scheduled review meeting.",
+          "alternatives": []
+        }
+      ]
+    },
+    {
+      "id": "AQ-U1",
+      "kind": "unsupported",
+      "expect": "decline",
+      "text": "How many days off do employees get for jury duty?",
+      "neighbors": [
+        "paid-leave-policy.md",
+        "sick-leave-policy.md"
+      ],
+      "facts": []
+    },
+    {
+      "id": "AQ-U2",
+      "kind": "unsupported",
+      "expect": "decline",
+      "text": "What mileage rate is reimbursed when I drive my own car for business?",
+      "neighbors": [
+        "travel-booking-policy.md",
+        "expense-reimbursement.md"
+      ],
+      "facts": []
+    },
+    {
+      "id": "AQ-U3",
+      "kind": "unsupported",
+      "expect": "decline",
+      "text": "Can I work remotely from another country for a few weeks?",
+      "neighbors": [
+        "remote-work-policy.md"
+      ],
+      "facts": []
+    },
+    {
+      "id": "AQ-U4",
+      "kind": "unsupported",
+      "expect": "decline",
+      "text": "How long does the company keep employees' performance review records?",
+      "neighbors": [
+        "data-retention-policy.md",
+        "performance-review-policy.md"
+      ],
+      "facts": []
+    }
+  ],
+  "diagnostics": [
+    {
+      "id": "D1",
+      "source": "queries.jsonl",
+      "expect": "answer",
+      "known_issue": "credited by score.py while omitting the sick- and parental-leave policies",
+      "text": "What are all the different kinds of paid time off available to employees?",
+      "facts": [
+        {
+          "id": "paid-leave",
+          "fact": "Employees accrue fifteen days of paid leave per year.",
+          "document": "paid-leave-policy.md",
+          "quote": "Employees accrue fifteen days of paid leave per year.",
+          "alternatives": []
+        },
+        {
+          "id": "sick-days",
+          "fact": "Up to ten sick days per year without a doctor's note.",
+          "document": "sick-leave-policy.md",
+          "quote": "Employees may take up to ten sick days per year without providing a doctor's note.",
+          "alternatives": []
+        },
+        {
+          "id": "parental",
+          "fact": "Primary caregivers receive twelve weeks of paid parental leave.",
+          "document": "parental-leave-policy.md",
+          "quote": "Primary caregivers receive twelve weeks of paid parental leave following a birth, adoption, or foster placement.",
+          "alternatives": []
+        }
+      ]
+    },
+    {
+      "id": "H3",
+      "source": "answerability.jsonl",
+      "expect": "answer",
+      "known_issue": "falsely declined",
+      "text": "Can I get a better chair for my desk?",
+      "facts": [
+        {
+          "id": "chair",
+          "fact": "A standing desk or ergonomic chair can be requested through the facilities portal.",
+          "document": "it-equipment-policy.md",
+          "quote": "Employees may request a standing desk or an ergonomic chair through the facilities portal.",
+          "alternatives": []
+        }
+      ]
+    },
+    {
+      "id": "H7",
+      "source": "answerability.jsonl",
+      "expect": "decline",
+      "known_issue": "answers an unsupported question with unrelated leave policies",
+      "text": "How many days of bereavement leave do employees get?",
+      "neighbors": [
+        "paid-leave-policy.md",
+        "sick-leave-policy.md"
+      ],
+      "facts": []
+    }
+  ]
+}

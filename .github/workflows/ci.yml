@@ -32,7 +32,7 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
-      - run: python3 -m unittest -v eval/test_score.py eval/test_evidence.py
+      - run: python3 -m unittest -v eval/test_score.py eval/test_evidence.py eval/test_answer_quality.py
       - run: for f in prepare-checkouts.sh workflow-1/*.sh workflow-2/*.sh eval/*.sh; do sh -n "$f"; done
 
   # The shared cross-repo acceptance gate for workflow 1, against the

@@ -21,3 +21,5 @@ combined-corpus:
 c566fd929fbbffb3e45020aa2dde58242be37cb71aa3bcd2225211b58c5705fa  -
 answerability.jsonl:
 d88826049270242f998203ff256346d78104e541894692f8dca893ded9d32605  answerability.jsonl
+answer-quality-v1.json:
+15f5a9e2a901eb2e3541b2d1834af9befee8b13a898bee1ea67f922034715075  answer-quality-v1.json
