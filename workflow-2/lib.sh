@@ -331,13 +331,45 @@ wf2_wait_api() {
     done
 }
 
+# wf2_document_status FILE EXPECTED: succeeds only if FILE is strict JSON
+# (UTF-8; no NaN/Infinity constants, which Python's default parser takes;
+# no duplicate keys) holding an object whose "status" is exactly the
+# string EXPECTED -- compared inside the parser, never after a shell
+# command substitution, which strips trailing newlines ("ready\n" would
+# become "ready"). Prints the decoded status JSON-encoded for diagnostics.
+wf2_document_status() {
+    python3 - "$1" "$2" <<'EOF'
+import json, sys
+def reject_constant(name):
+    raise ValueError(f"non-standard constant {name}")
+def reject_duplicates(pairs):
+    keys = [k for k, _ in pairs]
+    dup = sorted({k for k in keys if keys.count(k) > 1})
+    if dup:
+        raise ValueError(f"duplicate key {dup[0]!r}")
+    return dict(pairs)
+try:
+    with open(sys.argv[1], "rb") as f:
+        doc = json.loads(f.read().decode("utf-8"), parse_constant=reject_constant, object_pairs_hook=reject_duplicates)
+except FileNotFoundError:
+    print("none (no body)"); sys.exit(1)
+except (UnicodeDecodeError, ValueError) as e:
+    print(f"none (invalid JSON: {e})"); sys.exit(1)
+if not isinstance(doc, dict) or "status" not in doc:
+    print("none (no status field)"); sys.exit(1)
+print(json.dumps(doc["status"]))
+sys.exit(0 if isinstance(doc["status"], str) and doc["status"] == sys.argv[2] else 1)
+EOF
+}
+
 # wf2_wait_document_status COLLECTION DOCUMENT TOKEN EXPECTED TIMEOUT_SECONDS
 # Ready only on a response that is THIS poll's own and complete: curl
-# exit 0, HTTP 200, and a fresh body that is valid JSON whose "status" is
-# EXPECTED. A failed transfer (e.g. curl 18 after a "ready" body), a
-# non-200 with a ready-looking body, or unparseable JSON is retried until
-# the deadline (plus at most one in-flight request, WF2_HTTP_TIMEOUT),
-# then the last transport, HTTP and document status are reported.
+# exit 0, HTTP 200, and a fresh body that wf2_document_status accepts
+# (strict JSON, "status" exactly EXPECTED). A failed transfer (e.g. curl
+# 18 after a "ready" body), a non-200 with a ready-looking body, or any
+# other body is retried until the deadline (plus at most one in-flight
+# request, WF2_HTTP_TIMEOUT), then the last transport, HTTP and document
+# status are reported.
 wf2_wait_document_status() {
     _wcol=$1 _wdoc=$2 _wtok=$3 _wexp=$4 _wsec=${5:-30}
     _wout="$WF2_TMP/document_status.json"
@@ -346,10 +378,12 @@ wf2_wait_document_status() {
         rm -f "$_wout"
         _rc=0
         _http=$(api GET "/collections/$_wcol/documents/$_wdoc" "$_wtok" "" "$_wout") || _rc=$?
-        _wstat=$(json_field status "$_wout" 2>/dev/null || echo "none")
-        [ "$_rc" -eq 0 ] && [ "$_http" = 200 ] && [ "$_wstat" = "$_wexp" ] && return 0
+        _wok=0
+        _wstat=$(wf2_document_status "$_wout" "$_wexp") && _wok=1
+        [ "$_rc" -eq 0 ] && [ "$_http" = 200 ] && [ "$_wok" = 1 ] && return 0
         if [ "$(date +%s)" -ge "$_wend" ]; then
-            echo "wf2: document $_wdoc not $_wexp within ${_wsec}s (last poll: curl exit $_rc, http ${_http:-none}, document status $_wstat)" >&2
+            printf 'wf2: document %s not %s within %ss (last poll: curl exit %s, http %s, document status %s)\n' \
+                "$_wdoc" "$_wexp" "$_wsec" "$_rc" "${_http:-none}" "$_wstat" >&2
             return 1
         fi
         sleep 1

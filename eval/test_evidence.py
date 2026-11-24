@@ -31,13 +31,28 @@ import calibrate  # noqa: E402
 DECLINE = b'{"answer":"","answer_method":"extractive","citations":[]}'
 
 
+# Bodies that look ready to a lax reader but are not an exact, strict-JSON
+# "ready": a shell $(...) strips the decoded value's trailing newline, and
+# Python's default json parser accepts NaN/Infinity and keeps the last of
+# duplicate keys.
+MALFORMED = {
+    "newline": b'{"status": "ready\\n"}',
+    "newlines": b'{"status": "ready\\n\\n"}',
+    "nan": b'{"status": "ready", "progress": NaN}',
+    "infinity": b'{"status": "ready", "progress": Infinity}',
+    "neginfinity": b'{"status": "ready", "progress": -Infinity}',
+    "dupkey": b'{"status": "processing", "status": "ready"}',
+    "garbage": b"ready, but not JSON",
+}
+
+
 def mode_body(mode):
-    """A mode token like trunc200, ok500, ok200pending, ok200garbage:
+    """A mode token like trunc200, ok500, ok200pending, ok200nan:
     transfer (ok, or trunc = Content-Length 12 bytes longer than sent),
-    HTTP status, and the document status in the body (default ready;
-    "garbage" = not JSON)."""
+    HTTP status, and the body: a MALFORMED entry by name, else
+    {"status": <suffix or "ready">}."""
     m = re.fullmatch(r"(ok|trunc)(\d{3})(\w*)", mode)
-    body = b"ready, but not JSON" if m[3] == "garbage" else json.dumps({"status": m[3] or "ready"}).encode()
+    body = MALFORMED.get(m[3]) or json.dumps({"status": m[3] or "ready"}).encode()
     return m[1] == "trunc", int(m[2]), body
 
 
@@ -226,15 +241,30 @@ class Readiness(Layout):
         return r, Handler.hits.get(f"/v1/collections/{modes}/documents/{key}", 0)
 
     def test_persistent_failures_never_count_as_ready(self):
-        for modes, last in (("trunc200", "curl exit 18, http 200, document status ready"),  # whole ready body, short transfer
-                            ("ok500", "curl exit 0, http 500, document status ready"),      # ready-looking error response
-                            ("ok200pending", "curl exit 0, http 200, document status pending"),
-                            ("ok200garbage", "curl exit 0, http 200, document status none")):
+        for modes, last in (("trunc200", 'curl exit 18, http 200, document status "ready"'),  # whole ready body, short transfer
+                            ("ok500", 'curl exit 0, http 500, document status "ready"'),      # ready-looking error response
+                            ("ok200pending", 'curl exit 0, http 200, document status "pending"'),
+                            ("ok200garbage", "curl exit 0, http 200, document status none (invalid JSON: Expecting value")):
             with self.subTest(modes):
                 r, hits = self.wait_doc(modes, "persist")
                 self.assertNotEqual(r.returncode, 0, r.stderr)
-                self.assertIn(f"not ready within 2s (last poll: {last})", r.stderr)
+                self.assertIn(f"not ready within 2s (last poll: {last}", r.stderr)
                 self.assertGreaterEqual(hits, 2)  # retried within the deadline, not one shot
+
+    def test_malformed_ready_bodies_never_count_as_ready(self):
+        for name, last in (("newline", '"ready\\n"'), ("newlines", '"ready\\n\\n"'),
+                           ("nan", "none (invalid JSON: non-standard constant NaN)"),
+                           ("infinity", "none (invalid JSON: non-standard constant Infinity)"),
+                           ("neginfinity", "none (invalid JSON: non-standard constant -Infinity)"),
+                           ("dupkey", "none (invalid JSON: duplicate key 'status')")):
+            with self.subTest(name):
+                r, hits = self.wait_doc(f"ok200{name}", "malformed")
+                self.assertNotEqual(r.returncode, 0, r.stderr)
+                self.assertIn(f"(last poll: curl exit 0, http 200, document status {last})", r.stderr)
+                self.assertGreaterEqual(hits, 2)
+                # ...and a valid response after it allows progress
+                r, hits = self.wait_doc(f"ok200{name},ok200", "then-valid", deadline=10)
+                self.assertEqual((r.returncode, hits), (0, 2), r.stderr)
 
     def test_a_failed_poll_is_retried_and_a_valid_one_accepted(self):
         r, hits = self.wait_doc("trunc200,ok500,ok200", "recover", deadline=10)
@@ -272,26 +302,44 @@ exit 0
 
 
 class RunnerReadiness(Layout):
-    def test_persistent_readiness_failure_leaves_the_attempt_incomplete(self):
+    def setUp(self):
+        super().setUp()
         (self.bin / "docker").write_text(FAKE_STACK)
         compose = self.root / "helix-foundry" / "compose"
         (compose / ".env").write_text(f"HELIX_CORTEX_API_PORT={self.port}\nHELIX_ADMIN_PASSWORD=unused\n")
         (compose / "auth-fixture.json").write_text(json.dumps({f"t-{p}": {"principal": p} for p in ("alice", "bob", "carol")}))
         (self.root / "helix-cortex").mkdir()
         (self.root / "helix-cortex" / "go.mod").write_text("module x\n")
+
+    def run_eval(self, script):
+        Handler.ready_script = script  # every document's readiness polls follow this script
+        try:
+            return subprocess.run(["sh", str(self.labs / "eval" / "run-eval.sh"), "mock"], capture_output=True, text=True,
+                                  env=dict(self.env, EVAL_READY_TIMEOUT="2"))
+        finally:
+            Handler.ready_script = "ok200"
+
+    def test_a_valid_response_after_a_malformed_one_lets_ingestion_proceed(self):
+        before = dict(Handler.hits)
+        r = self.run_eval("ok200newline,ok200")
+        self.assertNotIn("not ready within", r.stderr)
+        self.assertIn("eval(mock): running queries", r.stdout)  # past ingestion (the fake stack stops it later)
+        out = self.labs / "eval" / "results-mock"
+        self.assertEqual(len((out / "doc_ids.tsv").read_text().splitlines()), 17)
+        polls = {k: v - before.get(k, 0) for k, v in Handler.hits.items() if "/ok200newline,ok200/documents/" in k}
+        polls = {k: v for k, v in polls.items() if v}  # this run's documents only
+        self.assertEqual((len(polls), set(polls.values())), (17, {2}))  # each: one malformed poll, then the valid one
+
+    def test_persistent_readiness_failure_leaves_the_attempt_incomplete(self):
         passes = self.valid_passes()
         self.assertEqual(self.score(*(passes[p].dir for p in ("mock", "real", "real-norerank")))[0], 0)
-        for script in ("trunc200", "ok500"):
+        for script in ("trunc200", "ok500", "ok200newline", "ok200nan", "ok200infinity", "ok200dupkey"):
             with self.subTest(script):
-                Handler.ready_script = script  # every readiness poll for the first document
-                try:
-                    r = subprocess.run(["sh", str(self.labs / "eval" / "run-eval.sh"), "mock"], capture_output=True, text=True,
-                                       env=dict(self.env, EVAL_READY_TIMEOUT="2"))
-                finally:
-                    Handler.ready_script = "ok200"
+                r = self.run_eval(script)
                 self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
                 self.assertIn("wf2: provider ok: mock", r.stdout)  # setup passed; ingestion is what failed
-                self.assertIn("not ready within 2s (last poll: curl exit " + ("18, http 200" if script == "trunc200" else "0, http 500"), r.stderr)
+                want = {"trunc200": "18, http 200", "ok500": "0, http 500"}.get(script, "0, http 200")
+                self.assertIn(f"not ready within 2s (last poll: curl exit {want}, document status", r.stderr)
                 meta = json.loads((passes["mock"].dir / "run.json").read_text())
                 self.assertIs(meta["completed"], False)
                 code, out = self.score(*(passes[p].dir for p in ("mock", "real", "real-norerank")))
