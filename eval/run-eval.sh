@@ -31,7 +31,11 @@
 # eval/results-answer-quality-<profile>, run.json also records the suite
 # (fixture file, sha256, the canonical freeze commit and the run's own
 # commit), and answer_quality.py score grades
-# it. Without EVAL_SUITE the run (and its 201-request plan) is unchanged.
+# it. EVAL_SUITE=dev-replay records, for each of the 27 calibration
+# development cases, the ordinary served /search order (top_k 50) and the
+# live /answers (EXPERIMENT-sentence-support.md; sentence-support.sh
+# replays it). Without EVAL_SUITE the run (and its 201-request plan) is
+# unchanged.
 # The X-Eval-Stage header (dense-only, fts-only, hybrid-prererank) is
 # test-only instrumentation, live only because this sets
 # CORTEX_TEST_HOOKS=1; "final" is the ordinary served /search path.
@@ -50,6 +54,7 @@ export WF2_REAL_EMBEDDINGS CORTEX_DISABLE_RERANK
 case "${EVAL_SUITE:-}" in
     "") SUITE_PLAN="$EVAL_DIR/score.py"; OUT_DIR=${2:-$EVAL_DIR/results-$PROFILE} ;;
     answer-quality) SUITE_PLAN="$EVAL_DIR/answer_quality.py"; OUT_DIR=${2:-$EVAL_DIR/results-answer-quality-$PROFILE} ;;
+    dev-replay) SUITE_PLAN="$EVAL_DIR/sentence_support.py"; OUT_DIR=${2:-$EVAL_DIR/results-dev-replay-$PROFILE} ;;
     *) echo "run-eval: unknown EVAL_SUITE ${EVAL_SUITE}" >&2; exit 64 ;;
 esac
 case "$OUT_DIR" in /*) ;; *) OUT_DIR="$PWD/$OUT_DIR" ;; esac
@@ -84,7 +89,7 @@ wf2_up
 # completed=true -- a crashed run leaves completed=false behind. Written
 # to a temp file and renamed, so a reader never sees a partial run.json.
 write_meta() {
-    BINDING=${BINDING:-[]} STARTED="$STARTED" PROFILE="$PROFILE" ROOT="$EVAL_DIR/../.." SUITE="${EVAL_SUITE:-}" \
+    BINDING=${BINDING:-[]} STARTED="$STARTED" PROFILE="$PROFILE" ROOT="$EVAL_DIR/../.." SUITE="${EVAL_SUITE:-}" SUITE_PLAN="$SUITE_PLAN" \
         python3 - "$OUT_DIR/run.json.tmp" "$EVAL_DIR" "$WF2_TMP/provider.json" "$1" "${2:-0}" <<'EOF'
 import datetime, hashlib, json, os, pathlib, re, subprocess, sys
 out, eval_dir, provider, completed, requests = sys.argv[1:6]
@@ -111,10 +116,11 @@ meta = {
     "provider": json.load(open(provider)),
     "db_binding": json.loads(os.environ["BINDING"]),
 }
-if os.environ["SUITE"] == "answer-quality":
-    # The canonical freeze commit (a pin) and the run's own commit, never
-    # the fixture's last commit in local history (wrong in shallow clones).
-    meta["suite"] = json.loads(subprocess.run([sys.executable, str(pathlib.Path(eval_dir, "answer_quality.py")), "suite-meta"],
+if os.environ["SUITE"]:
+    # The suite's own record (answer-quality: the canonical freeze commit,
+    # a pin, and the run's own commit -- never the fixture's last commit
+    # in local history, which is wrong in shallow clones).
+    meta["suite"] = json.loads(subprocess.run([sys.executable, os.environ["SUITE_PLAN"], "suite-meta"],
                                               capture_output=True, text=True, check=True).stdout)
 json.dump(meta, open(out, "w"), indent=2)
 EOF

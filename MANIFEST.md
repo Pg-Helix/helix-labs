@@ -60,7 +60,7 @@ mkdir helix-repro && cd helix-repro
 git clone -b feat/real-embedding-eval https://github.com/Pg-Helix/helix-labs.git
 sh helix-labs/prepare-checkouts.sh       # clones/pins helix-foundry, helix-kernel, helix-cortex
 export COMPOSE_BAKE=false                # classic builder; see ci.yml
-python3 -m unittest -v helix-labs/eval/test_score.py helix-labs/eval/test_evidence.py helix-labs/eval/test_answer_quality.py   # offline
+python3 -m unittest -v helix-labs/eval/test_score.py helix-labs/eval/test_evidence.py helix-labs/eval/test_answer_quality.py helix-labs/eval/test_sentence_support.py   # offline
 sh helix-labs/eval/calibrate.sh        # replays the /answers cutoff (0.707) on the pinned model
 cd helix-labs/workflow-1 && sh acceptance.sh
 cd ../workflow-2 && sh acceptance.sh && sh version-change.sh
@@ -68,6 +68,7 @@ cd ../eval && sh run-eval.sh mock && sh run-eval.sh real && sh run-eval.sh real-
 python3 score.py                         # exit 0 pass / 1 target missed / 2 invalid evidence
 EVAL_SUITE=answer-quality sh run-eval.sh real-norerank        # frozen answer-quality benchmark v1
 python3 answer_quality.py score results-answer-quality-real-norerank   # exit 0 measured / 2 invalid evidence
+EVAL_SUITE=dev-replay sh run-eval.sh real-norerank && sh sentence-support.sh   # sentence-support experiment (dev only)
 ```
 
 Each script brings up and tears down its own Compose project on fixed loopback ports

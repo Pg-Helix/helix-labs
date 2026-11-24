@@ -32,7 +32,7 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
-      - run: python3 -m unittest -v eval/test_score.py eval/test_evidence.py eval/test_answer_quality.py
+      - run: python3 -m unittest -v eval/test_score.py eval/test_evidence.py eval/test_answer_quality.py eval/test_sentence_support.py
       - run: for f in prepare-checkouts.sh workflow-1/*.sh workflow-2/*.sh eval/*.sh; do sh -n "$f"; done
 
   # The shared cross-repo acceptance gate for workflow 1, against the
@@ -141,6 +141,22 @@ jobs:
           { echo '```'; cat "$GITHUB_WORKSPACE/eval-out-answer-quality.txt"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
           exit "$code"
         shell: bash
+      # Pre-registered experiment (eval/EXPERIMENT-sentence-support.md):
+      # development cases only, on its own fresh served-profile stack.
+      # Exit 0 = valid replay whatever the go/no-go decision; 2 = invalid
+      # evidence or the control did not reproduce the live selections.
+      - name: Sentence-support experiment (development replay)
+        run: |
+          cd helix-labs/eval
+          EVAL_SUITE=dev-replay sh run-eval.sh real-norerank
+          set +e
+          SENTENCE_SUPPORT_REPORT="$GITHUB_WORKSPACE/eval-out/report-sentence-support.json" sh sentence-support.sh | tee "$GITHUB_WORKSPACE/eval-out-sentence-support.txt"
+          code=${PIPESTATUS[0]}
+          { echo '```'; cat "$GITHUB_WORKSPACE/eval-out-sentence-support.txt"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          exit "$code"
+        shell: bash
+        env:
+          WF2_ARTIFACT_DIR: ${{ github.workspace }}/wf2-logs/dev-replay
       - uses: actions/upload-artifact@v4
         if: always()
         with:
