@@ -14,11 +14,11 @@ wf2_up
 
 echo "workflow-2: alice creates a collection and ingests a document"
 code=$(api POST /collections "$ALICE_TOKEN" '{"tenant":"acme","name":"handbook"}')
-[ "$code" = "201" ] || { echo "workflow-2: create collection failed (http $code)"; cat /tmp/wf2_api_body.json; exit 1; }
+[ "$code" = "201" ] || { echo "workflow-2: create collection failed (http $code)"; cat $WF2_BODY; exit 1; }
 COL=$(json_field id)
 
 code=$(api POST "/collections/$COL/documents" "$ALICE_TOKEN" '{"tenant":"acme","name":"policy.md","content_type":"text/markdown","content":"Employees accrue fifteen days of paid leave per year."}')
-[ "$code" = "201" ] || { echo "workflow-2: ingest failed (http $code)"; cat /tmp/wf2_api_body.json; exit 1; }
+[ "$code" = "201" ] || { echo "workflow-2: ingest failed (http $code)"; cat $WF2_BODY; exit 1; }
 DOC=$(json_field id)
 
 echo "workflow-2: waiting for the chunk-worker to embed it"
@@ -26,18 +26,18 @@ wf2_wait_document_status "$COL" "$DOC" "$ALICE_TOKEN" ready 30
 
 echo "workflow-2: searching"
 code=$(api POST /search "$ALICE_TOKEN" "{\"tenant\":\"acme\",\"collection_id\":\"$COL\",\"query\":\"paid leave\"}")
-[ "$code" = "200" ] || { echo "workflow-2: search failed (http $code)"; cat /tmp/wf2_api_body.json; exit 1; }
+[ "$code" = "200" ] || { echo "workflow-2: search failed (http $code)"; cat $WF2_BODY; exit 1; }
 echo "workflow-2: top result snippet: $(json_field results.0.snippet)"
 
 echo "workflow-2: asking for a cited answer"
 code=$(api POST /answers "$ALICE_TOKEN" "{\"tenant\":\"acme\",\"collection_id\":\"$COL\",\"query\":\"paid leave\"}")
-[ "$code" = "200" ] || { echo "workflow-2: answer failed (http $code)"; cat /tmp/wf2_api_body.json; exit 1; }
+[ "$code" = "200" ] || { echo "workflow-2: answer failed (http $code)"; cat $WF2_BODY; exit 1; }
 echo "workflow-2: answer: $(json_field answer)"
 CHUNK=$(json_field citations.0.chunk_id)
 
 echo "workflow-2: resolving the citation via the evidence endpoint"
 code=$(api GET "/evidence/$CHUNK?tenant=acme" "$ALICE_TOKEN")
-[ "$code" = "200" ] || { echo "workflow-2: evidence lookup failed (http $code)"; cat /tmp/wf2_api_body.json; exit 1; }
+[ "$code" = "200" ] || { echo "workflow-2: evidence lookup failed (http $code)"; cat $WF2_BODY; exit 1; }
 echo "workflow-2: cited text: $(json_field text)"
 
 echo "workflow-2: granting bob read access, confirming he can search, then revoking it"

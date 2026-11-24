@@ -48,7 +48,7 @@ wf1_up() {
     echo "wf1: bringing up project $WF1_PROJECT"
     $COMPOSE up --build -d
     i=0
-    until $COMPOSE ps postgres --format '{{.Health}}' 2>/dev/null | grep -q healthy; do
+    until [ "$($COMPOSE ps postgres --format '{{.Health}}' 2>/dev/null || true)" = healthy ]; do
         i=$((i + 1))
         if [ "$i" -gt 60 ]; then
             echo "wf1: postgres never became healthy" >&2

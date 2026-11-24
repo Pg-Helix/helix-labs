@@ -1,0 +1,1 @@
+Meeting rooms can be booked up to two weeks in advance through the facilities calendar. No-shows for three consecutive bookings result in losing booking privileges for thirty days. Rooms must be left tidy for the next group.

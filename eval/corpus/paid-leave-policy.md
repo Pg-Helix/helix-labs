@@ -1,0 +1,1 @@
+Employees accrue fifteen days of paid leave per year. Unused leave carries over up to five days into the next calendar year. Leave requests must be submitted through the HR portal at least two weeks in advance for planned absences.

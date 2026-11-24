@@ -1,0 +1,1 @@
+Employees may work remotely up to three days per week with their manager's approval. Remote work arrangements do not change paid leave accrual or eligibility for benefits. Equipment used for remote work remains company property and must be returned upon termination.

@@ -1,0 +1,1 @@
+Employees receive a monthly wellness stipend of fifty dollars that can be applied toward gym memberships, fitness classes, or mental health apps. The stipend is paid as a reimbursement and does not roll over between months.

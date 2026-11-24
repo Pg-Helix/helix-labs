@@ -1,0 +1,1 @@
+Primary caregivers receive twelve weeks of paid parental leave following a birth, adoption, or foster placement. Secondary caregivers receive four weeks of paid leave. Parental leave may be taken in a single continuous block or split within the first year.

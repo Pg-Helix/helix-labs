@@ -1,0 +1,1 @@
+Lost badges must be reported to security within twenty four hours of discovery. A replacement badge costs twenty five dollars, deducted from the employee's next paycheck. Badges must be worn visibly at all times inside company buildings.

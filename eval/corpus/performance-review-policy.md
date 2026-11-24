@@ -1,0 +1,1 @@
+Performance reviews occur twice a year, in June and December. Managers submit written feedback two weeks before the scheduled review meeting. Salary adjustments tied to performance take effect the following pay cycle.

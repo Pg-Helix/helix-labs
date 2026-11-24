@@ -1,0 +1,1 @@
+All business travel must be booked through the corporate travel portal. Economy class is standard for flights under six hours; business class requires VP approval. Rental cars should be booked at the compact or economy tier unless transporting equipment.

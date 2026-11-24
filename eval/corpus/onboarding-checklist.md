@@ -1,0 +1,1 @@
+New employees complete orientation on their first day, covering benefits enrollment and workplace policies. IT equipment is provisioned within one week of the start date. A new hire's manager is responsible for scheduling a thirty day check-in.

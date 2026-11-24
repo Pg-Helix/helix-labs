@@ -1,0 +1,1 @@
+The engineering reorganization planned for next quarter will consolidate the platform and infrastructure teams under a single director. Headcount reductions, if any, will be communicated individually before any public announcement.
