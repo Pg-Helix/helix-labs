@@ -29,7 +29,8 @@
 # (ANSWER-QUALITY.md) instead, on the same fresh-stack setup: its plan is
 # answer_quality.py plan (15 /answers requests), OUT_DIR defaults to
 # eval/results-answer-quality-<profile>, run.json also records the suite
-# (fixture file, sha256, last commit), and answer_quality.py score grades
+# (fixture file, sha256, the canonical freeze commit and the run's own
+# commit), and answer_quality.py score grades
 # it. Without EVAL_SUITE the run (and its 201-request plan) is unchanged.
 # The X-Eval-Stage header (dense-only, fts-only, hybrid-prererank) is
 # test-only instrumentation, live only because this sets
@@ -111,9 +112,10 @@ meta = {
     "db_binding": json.loads(os.environ["BINDING"]),
 }
 if os.environ["SUITE"] == "answer-quality":
-    fx = pathlib.Path(eval_dir, "answer-quality-v1.json")
-    meta["suite"] = {"name": "answer-quality", "fixture": fx.name, "fixture_sha256": hashlib.sha256(fx.read_bytes()).hexdigest(),
-                     "fixture_commit": git("helix-labs", "log", "-1", "--format=%H", "--", "eval/" + fx.name).strip() or None}
+    # The canonical freeze commit (a pin) and the run's own commit, never
+    # the fixture's last commit in local history (wrong in shallow clones).
+    meta["suite"] = json.loads(subprocess.run([sys.executable, str(pathlib.Path(eval_dir, "answer_quality.py")), "suite-meta"],
+                                              capture_output=True, text=True, check=True).stdout)
 json.dump(meta, open(out, "w"), indent=2)
 EOF
     mv "$OUT_DIR/run.json.tmp" "$OUT_DIR/run.json"

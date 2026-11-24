@@ -341,3 +341,24 @@ gates, the model, the reranker setting and the 0.707 cutoff.
   - `answer_quality.py score` grades it with `score.py`'s evidence checks, crediting a fact
     only from the returned extract of a valid citation of its source document.
   - It is a baseline with no target. Exit 2 means only that the evidence is invalid.
+
+## Revision 2026-11-24 (3): answer-quality fixture provenance
+
+The fixture, the rubric and the original artifacts are unchanged.
+
+- **Runner.** `run.json`'s suite record now carries two commits:
+  - the canonical v1 freeze commit, `fixture_commit`. This is a pin in `answer_quality.py`
+    (`de2bdc7`), so full and shallow checkouts record the same value;
+  - the commit the run actually ran at, `run_commit`.
+
+  The earlier runner derived the freeze commit from local history. A depth-one checkout
+  therefore recorded the commit it was cloned at: CI artifact 14902395464 records the test
+  merge `427ae05`.
+- **Scorer.** The scorer now verifies three things:
+  - the fixture bytes against their `HASHES.txt` digest;
+  - the recorded freeze commit against the pin;
+  - any `run_commit` against `revisions.helix-labs.commit`.
+
+  The original local artifact, which records `de2bdc7`, still scores. CI artifact
+  14902395464 now scores 2 for its recorded freeze commit. Its responses were rescored
+  independently with the `6cd0df6` scorer, as the verification describes.

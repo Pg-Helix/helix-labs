@@ -31,12 +31,70 @@ class Bench(test_score.Pass):
         self.dir = Path(root) / "results-answer-quality-real-norerank"
         self.responses = {f"{i}__answer": (200, self.answer(list(dict.fromkeys(f["document"] for f in q["facts"]))))
                           for i, q in ITEMS.items()}
-        self.meta["suite"] = {"name": "answer-quality", "fixture": aq.FIXTURE, "fixture_commit": "f" * 40,
+        self.meta["suite"] = {"name": "answer-quality", "fixture": aq.FIXTURE, "fixture_commit": aq.FREEZE_COMMIT,
+                              "run_commit": self.meta["revisions"]["helix-labs"]["commit"],
                               "fixture_sha256": hashlib.sha256((EVAL / aq.FIXTURE).read_bytes()).hexdigest()}
 
-    def score(self):
+    def score(self, inputs=EVAL):
         self.write()
-        return aq.score_run(self.dir)
+        return aq.score_run(self.dir, inputs)
+
+
+class Provenance(unittest.TestCase):
+    """The fixture's identity: bytes against HASHES.txt, the canonical
+    freeze commit (a pin), and the run's own commit recorded separately."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp)
+
+    def test_a_shallow_checkout_records_the_canonical_freeze_and_its_own_commit(self):
+        clone = self.tmp / "shallow"
+        subprocess.run(["git", "clone", "-q", "--depth", "1", f"file://{EVAL.parent}", str(clone)], check=True, capture_output=True)
+        head = subprocess.run(["git", "-C", str(clone), "rev-parse", "HEAD"], capture_output=True, text=True, check=True).stdout.strip()
+        self.assertEqual(subprocess.run(["git", "-C", str(clone), "rev-parse", "--is-shallow-repository"],
+                                        capture_output=True, text=True).stdout.strip(), "true")
+        derived = subprocess.run(["git", "-C", str(clone), "log", "-1", "--format=%H", "--", "eval/" + aq.FIXTURE],
+                                 capture_output=True, text=True).stdout.strip()
+        if head != aq.FREEZE_COMMIT:
+            self.assertEqual(derived, head)  # the old derivation: whatever was cloned, not the freeze
+        meta = aq.suite_meta(clone / "eval", repo=clone)
+        self.assertEqual((meta["fixture_commit"], meta["run_commit"]), (aq.FREEZE_COMMIT, head))
+        self.assertEqual(meta["fixture_sha256"], hashlib.sha256((clone / "eval" / aq.FIXTURE).read_bytes()).hexdigest())
+
+    def test_a_plausible_but_incorrect_freeze_revision_is_invalid(self):
+        for name, rev in (("ci-merge", "427ae05" + "0" * 33), ("run-head", "6cd0df698f117c38bd38aa79ec7e270a5ce27c62"),
+                          ("zeros", "0" * 40), ("short", aq.FREEZE_COMMIT[:7])):
+            with self.subTest(name):
+                b = Bench(self.tmp / name)
+                b.meta["suite"]["fixture_commit"] = rev
+                r = b.score()
+                self.assertEqual(r["exit_code"], 2)
+                self.assertTrue(any("!= the canonical v1 freeze" in e for e in r["errors"]), r["errors"])
+
+    def test_a_run_commit_that_disagrees_with_the_revisions_is_invalid(self):
+        b = Bench(self.tmp / "run")
+        b.meta["suite"]["run_commit"] = aq.FREEZE_COMMIT
+        r = b.score()
+        self.assertEqual(r["exit_code"], 2)
+        self.assertTrue(any("run_commit" in e for e in r["errors"]), r["errors"])
+
+    def test_a_mismatched_fixture_digest_is_invalid(self):
+        inputs = self.tmp / "inputs"
+        shutil.copytree(EVAL, inputs, ignore=shutil.ignore_patterns("results-*", "__pycache__", "report*.json"))
+        h = (inputs / "HASHES.txt").read_text()
+        pin = hashlib.sha256((EVAL / aq.FIXTURE).read_bytes()).hexdigest()
+        (inputs / "HASHES.txt").write_text(h.replace(pin, "1" * 64))
+        self.assertTrue(any("HASHES.txt pin" in e for e in aq.check_fixture(aq.load_fixture(inputs), inputs)))
+        r = Bench(self.tmp / "digest").score(inputs)
+        self.assertEqual(r["exit_code"], 2)
+        self.assertTrue(any(f"{aq.FIXTURE} sha256 {pin} != HASHES.txt pin {'1' * 64}" in e for e in r["errors"]), r["errors"])
+        # ...and changed fixture bytes under the original pin
+        (inputs / "HASHES.txt").write_text(h)
+        (inputs / aq.FIXTURE).write_bytes((EVAL / aq.FIXTURE).read_bytes() + b"\n")
+        self.assertTrue(any("HASHES.txt pin" in e for e in aq.check_fixture(aq.load_fixture(inputs), inputs)))
 
 
 class Scoring(unittest.TestCase):

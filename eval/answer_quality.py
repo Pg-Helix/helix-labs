@@ -39,6 +39,11 @@ import score as base  # noqa: E402  (the existing evidence checks)
 
 FIXTURE = "answer-quality-v1.json"
 PROFILE = "real-norerank"  # the served profile (PROTOCOL.md Decision D)
+# The canonical v1 freeze: the commit that froze the fixture, its rubric
+# and its HASHES.txt digest, pushed (with CI) before any of its questions
+# reached /answers. A pin, never derived from local history: in a shallow
+# checkout `git log -- <fixture>` names whatever commit was cloned.
+FREEZE_COMMIT = "de2bdc7ab21d2d536c736f5a7402092cb801b594"
 KINDS = {"single_fact": 4, "multi_passage": 4, "unsupported": 4}
 
 
@@ -69,19 +74,37 @@ def evidence(fact):
     return [(fact["document"], fact["quote"])] + [(a["document"], a["quote"]) for a in fact.get("alternatives", [])]
 
 
-def check_fixture(fx, inputs=EVAL_DIR):
-    """Document-level label checks. Returns a list of problems."""
-    inputs = Path(inputs)
-    errs = []
-    hashes = {}
-    section = None
-    for line in (inputs / "HASHES.txt").read_text().splitlines():
+def read_hashes(inputs):
+    hashes, section = {}, None
+    for line in (Path(inputs) / "HASHES.txt").read_text().splitlines():
         if line.endswith(":") and " " not in line:
             section = line[:-1]
             continue
         p = line.split()
         if len(p) == 2:
             hashes[section or p[1]] = p[0]
+    return hashes
+
+
+def suite_meta(inputs=EVAL_DIR, repo=None):
+    """run.json's suite record (run-eval.sh EVAL_SUITE=answer-quality):
+    the fixture's sha256, the canonical freeze commit (the pin, in full and
+    shallow checkouts alike) and, separately, the commit this run ran at."""
+    import subprocess
+    repo = Path(repo) if repo else Path(inputs).parent
+    head = subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
+    return {"name": "answer-quality", "fixture": FIXTURE, "fixture_sha256": sha256((Path(inputs) / FIXTURE).read_bytes()),
+            "fixture_commit": FREEZE_COMMIT, "run_commit": head if re.fullmatch(r"[0-9a-f]{40}", head) else None}
+
+
+def check_fixture(fx, inputs=EVAL_DIR):
+    """Document-level label checks. Returns a list of problems."""
+    inputs = Path(inputs)
+    errs = []
+    hashes = read_hashes(inputs)
+    got = sha256((inputs / FIXTURE).read_bytes())
+    if hashes.get(FIXTURE) != got:
+        errs.append(f"fixture: {FIXTURE} sha256 {got} != HASHES.txt pin {hashes.get(FIXTURE)}")
     corpus = sorted((inputs / "corpus").rglob("*.md"))
     combined = sha256(b"".join(p.read_bytes() for p in sorted(corpus, key=lambda p: str(p.relative_to(inputs)))))
     if fx["corpus"]["combined_sha256"] != combined or hashes.get("combined-corpus") != combined:
@@ -315,8 +338,11 @@ def score_run(results_dir, inputs=EVAL_DIR):
     suite = meta.get("suite") if isinstance(meta.get("suite"), dict) else {}
     if suite.get("name") != "answer-quality" or suite.get("fixture") != FIXTURE or suite.get("fixture_sha256") != fixture_sha:
         s.err(PROFILE, f"run.json suite {suite!r} is not answer-quality with {FIXTURE} sha256 {fixture_sha}")
-    if not re.fullmatch(r"[0-9a-f]{40}", str(suite.get("fixture_commit"))):
-        s.err(PROFILE, f"run.json suite lacks the fixture commit (got {suite.get('fixture_commit')!r})")
+    if suite.get("fixture_commit") != FREEZE_COMMIT:
+        s.err(PROFILE, f"run.json suite fixture_commit {suite.get('fixture_commit')!r} != the canonical v1 freeze {FREEZE_COMMIT}")
+    labs = ((meta.get("revisions") or {}).get("helix-labs") or {}).get("commit")
+    if "run_commit" in suite and suite["run_commit"] != labs:
+        s.err(PROFILE, f"run.json suite run_commit {suite['run_commit']!r} != revisions.helix-labs.commit {labs!r}")
     fit = {}
     if P.get("chunks"):
         e, _, fit = resolve(fx, {cid: (c["doc"], c["text"]) for cid, c in P["chunks"].items()})
@@ -330,7 +356,7 @@ def score_run(results_dir, inputs=EVAL_DIR):
         (diag if is_diag else rows)[q["id"]] = grade(q, chk, P["responses"][f"{q['id']}__answer"]["body"], P)
     report = {
         "benchmark": {"name": fx["name"], "version": fx["version"], "fixture": FIXTURE, "fixture_sha256": fixture_sha,
-                      "fixture_commit": suite.get("fixture_commit"), "rubric": fx["rubric"]},
+                      "fixture_commit": suite.get("fixture_commit"), "run_commit": suite.get("run_commit"), "rubric": fx["rubric"]},
         "profile": PROFILE, "results_dir": str(results_dir), "scorer_revision": base.git_rev(),
         "run": {k: meta.get(k) for k in ("started_at", "finished_at", "requests", "inputs", "revisions", "provider", "db_binding")},
         "label_fit": fit,
@@ -375,6 +401,9 @@ def main(argv=None):
     argv = sys.argv[1:] if argv is None else argv
     if argv[:1] == ["plan"]:
         print_plan(*argv[1:4])
+        return 0
+    if argv[:1] == ["suite-meta"]:
+        print(json.dumps(suite_meta()))
         return 0
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     sub = ap.add_subparsers(dest="cmd", required=True)
