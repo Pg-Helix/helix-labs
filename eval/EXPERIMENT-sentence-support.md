@@ -116,3 +116,47 @@ support score. It uses development data only.
 
 **On no-go:** report the negative result and the criterion, or tradeoff, that ruled it out.
 v1 is not touched.
+
+## Result (2026-11-24): NO-GO (appended; nothing above was changed)
+
+The experiment ran at pre-registration commit `0a0f26c` on a fresh `real-norerank` stack
+(Foundry `ffc2102`, Kernel `0f5bec3`, Cortex `2fcaa31`). It was reproduced on CI amd64 in
+[run 45367094247](https://github.com/Pg-Helix/helix-labs/actions/runs/45367094247).
+
+**The control reproduced everything it had to:**
+- all 27 live selections (answer text and citations);
+- the 0.707 cutoff, re-derived from the same vectors at 24/27;
+- the development reference: 16/23 snippets, 14/19 complete, 7/7 declines, 5 off-label
+  extracts.
+
+**Candidate cutoff** (pre-registered method): midpoint 0.6946594, rounded to **0.695**,
+25/27 on arm64. On amd64 it is 0.6941823, rounded to 0.694, with identical selections. Without
+C3 the result is also 0.695.
+
+| Measure | Control 0.707 | Candidate 0.695 | Criterion |
+|---|---|---|---|
+| Labeled snippets returned | 16/23 | **18/23** | > 16 ✔ |
+| Complete answers (n=19) | 14 | **15** | ≥ 14 ✔ |
+| Unsupported declined (n=7) | 7 | **6** (N1 answered) | 7 ✘ |
+| Positive controls A1/A4/B1/B2 | 4/4 | 4/4 | 4 ✔ |
+| Off-label extracts | 5/21 | **7/25** | ≤ 5 ✘ |
+
+**What changed under the candidate:**
+- X3 is now complete.
+- D3 is now partial.
+- X2 adds an unrelated performance-review extract.
+- N1 ("How many sick days do contractors get per year?") is answered with the sick-leave
+  policy.
+
+**The tradeoff that rules it out.** Sentence scoring lifts N1 to 0.7288, through the "ten sick
+days … without a doctor's note" sentence, which lacks the decisive qualifier. That is above
+positive control B1 (0.6962), and above B6 (0.6962), C1 (0.7006) and D1 (0.7059). Under this
+signal, no cutoff can decline N1 without losing B1, so the gain in recovered facts cannot be
+had while keeping every correct decline.
+
+**Cost.** The 15 passages split into 43 sentences: 43 more indexing embeddings and about
+132 KB of float32 vectors. Each question still needs one query embedding, and the cosine
+comparisons per question rise from 15 to 43.
+
+Because the result is no-go, v1 was not replayed and the candidate is not implemented in
+Cortex.
