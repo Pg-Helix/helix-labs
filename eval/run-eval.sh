@@ -24,6 +24,13 @@
 #                     and every answerability.jsonl row; unauthorized
 #                     queries as bob at all four stages + /answers, plus an
 #                     authorized alice control at all four stages)
+#
+# EVAL_SUITE=answer-quality runs the frozen answer-quality benchmark
+# (ANSWER-QUALITY.md) instead, on the same fresh-stack setup: its plan is
+# answer_quality.py plan (15 /answers requests), OUT_DIR defaults to
+# eval/results-answer-quality-<profile>, run.json also records the suite
+# (fixture file, sha256, last commit), and answer_quality.py score grades
+# it. Without EVAL_SUITE the run (and its 201-request plan) is unchanged.
 # The X-Eval-Stage header (dense-only, fts-only, hybrid-prererank) is
 # test-only instrumentation, live only because this sets
 # CORTEX_TEST_HOOKS=1; "final" is the ordinary served /search path.
@@ -39,7 +46,11 @@ case "$PROFILE" in
 esac
 export WF2_REAL_EMBEDDINGS CORTEX_DISABLE_RERANK
 
-OUT_DIR=${2:-$EVAL_DIR/results-$PROFILE}
+case "${EVAL_SUITE:-}" in
+    "") SUITE_PLAN="$EVAL_DIR/score.py"; OUT_DIR=${2:-$EVAL_DIR/results-$PROFILE} ;;
+    answer-quality) SUITE_PLAN="$EVAL_DIR/answer_quality.py"; OUT_DIR=${2:-$EVAL_DIR/results-answer-quality-$PROFILE} ;;
+    *) echo "run-eval: unknown EVAL_SUITE ${EVAL_SUITE}" >&2; exit 64 ;;
+esac
 case "$OUT_DIR" in /*) ;; *) OUT_DIR="$PWD/$OUT_DIR" ;; esac
 MARKER=.helix-eval-results
 # Validate before anything is deleted: never a symlink, never a non-
@@ -72,7 +83,7 @@ wf2_up
 # completed=true -- a crashed run leaves completed=false behind. Written
 # to a temp file and renamed, so a reader never sees a partial run.json.
 write_meta() {
-    BINDING=${BINDING:-[]} STARTED="$STARTED" PROFILE="$PROFILE" ROOT="$EVAL_DIR/../.." \
+    BINDING=${BINDING:-[]} STARTED="$STARTED" PROFILE="$PROFILE" ROOT="$EVAL_DIR/../.." SUITE="${EVAL_SUITE:-}" \
         python3 - "$OUT_DIR/run.json.tmp" "$EVAL_DIR" "$WF2_TMP/provider.json" "$1" "${2:-0}" <<'EOF'
 import datetime, hashlib, json, os, pathlib, re, subprocess, sys
 out, eval_dir, provider, completed, requests = sys.argv[1:6]
@@ -99,6 +110,10 @@ meta = {
     "provider": json.load(open(provider)),
     "db_binding": json.loads(os.environ["BINDING"]),
 }
+if os.environ["SUITE"] == "answer-quality":
+    fx = pathlib.Path(eval_dir, "answer-quality-v1.json")
+    meta["suite"] = {"name": "answer-quality", "fixture": fx.name, "fixture_sha256": hashlib.sha256(fx.read_bytes()).hexdigest(),
+                     "fixture_commit": git("helix-labs", "log", "-1", "--format=%H", "--", "eval/" + fx.name).strip() or None}
 json.dump(meta, open(out, "w"), indent=2)
 EOF
     mv "$OUT_DIR/run.json.tmp" "$OUT_DIR/run.json"
@@ -150,7 +165,7 @@ BINDING=$(pg_admin -c "SELECT coalesce(json_agg(json_build_object('model_id', mo
 export BINDING
 
 echo "eval($PROFILE): running queries"
-python3 "$EVAL_DIR/score.py" plan "$COL_PUBLIC" "$COL_RESTRICTED" "$COL_EMPTY" > "$WF2_TMP/plan.tsv"
+python3 "$SUITE_PLAN" plan "$COL_PUBLIC" "$COL_RESTRICTED" "$COL_EMPTY" > "$WF2_TMP/plan.tsv"
 TAB=$(printf '\t')
 n=0
 while IFS="$TAB" read -r name endpoint principal stage body; do

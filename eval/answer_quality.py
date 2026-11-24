@@ -1,7 +1,18 @@
 #!/usr/bin/env python3
-"""Answer-quality benchmark (ANSWER-QUALITY.md): frozen fixture checks.
+"""Answer-quality benchmark (ANSWER-QUALITY.md): label checks, plan, scorer.
 
   python3 answer_quality.py check [--chunks RESULTS_DIR]
+  python3 answer_quality.py plan PUBLIC_ID RESTRICTED_ID EMPTY_ID   (run-eval.sh)
+  python3 answer_quality.py score RESULTS_DIR [--report FILE]
+
+score grades a run-eval.sh results directory made with
+EVAL_SUITE=answer-quality on the served profile (real-norerank), after
+the existing score.py evidence checks (run metadata, provider/model/
+reranker/answer rule, revisions, document mapping, chunk inventory,
+per-request transport status, HTTP 200, JSON, AnswerResponse contract
+and citations). It credits a required fact only when its quote appears
+in the returned extract of a valid citation of the quote's own document.
+Exit 0 = valid evidence (a baseline: no quality target), 2 = invalid.
 
 check validates the frozen fixture (answer-quality-v1.json) against the
 hash-pinned public corpus: 4/4/4 new questions (ids and texts unused by
@@ -12,7 +23,7 @@ doc_ids.tsv + chunks.jsonl) it also resolves every quote to exactly one
 passage of the pinned chunker and checks that each answerable
 question's facts fit the API's answer bound: at most 3 passages whose
 stripped texts, joined by " ... ", fit in 2,000 bytes.
-Exit 0 = labels valid, 2 = invalid.
+check exits 0 = labels valid, 2 = invalid.
 """
 import argparse
 import hashlib
@@ -23,7 +34,11 @@ import sys
 from pathlib import Path
 
 EVAL_DIR = Path(__file__).resolve().parent
+sys.path.insert(0, str(EVAL_DIR))
+import score as base  # noqa: E402  (the existing evidence checks)
+
 FIXTURE = "answer-quality-v1.json"
+PROFILE = "real-norerank"  # the served profile (PROTOCOL.md Decision D)
 KINDS = {"single_fact": 4, "multi_passage": 4, "unsupported": 4}
 
 
@@ -168,13 +183,220 @@ def resolve(fx, chunks):
     return errs, where_found, fit
 
 
+# ---------------------------------------------------------------- plan
+
+def print_plan(public_id, restricted_id, empty_id, inputs=EVAL_DIR):
+    """run-eval.sh's request list for EVAL_SUITE=answer-quality: one
+    /answers request as alice on the public collection per question and
+    diagnostic (same tab-separated format as score.py plan)."""
+    for q, _ in items(load_fixture(inputs)):
+        body = {"tenant": "acme", "collection_id": public_id, "query": q["text"]}
+        print("\t".join([f"{q['id']}__answer", "/answers", "alice", "-", json.dumps(body)]))
+
+
+# ---------------------------------------------------------------- scoring
+
+class BenchmarkScorer(base.Scorer):
+    """score.py's Scorer, with this suite's request plan."""
+
+    def __init__(self, inputs, fx):
+        super().__init__(inputs)
+        self.fx = fx
+
+    def required_files(self):
+        return {f"{q['id']}__answer": ("alice", "answer") for q, _ in items(self.fx)}
+
+
+def split_extracts(answer, texts):
+    """The returned extract of each cited passage: answer must be the
+    passages' stripped texts joined by the separator in citation order,
+    the last possibly cut at the byte bound. Returns [(extract,
+    truncated)] or None when the answer is not the cited passages' text."""
+    sep = base.EXTRACTIVE_SEPARATOR
+    rest, out = answer, []
+    for i, t in enumerate(texts):
+        t = t.strip()
+        if i:
+            if not rest.startswith(sep):
+                return None
+            rest = rest[len(sep):]
+        if rest.startswith(t):
+            out.append((t, False))
+            rest = rest[len(t):]
+        elif i == len(texts) - 1 and rest and t.startswith(rest):
+            out.append((rest, True))
+            rest = ""
+        else:
+            return None
+    return out if rest == "" else None
+
+
+def citation_ok(c, P):
+    """A citation of an ingested public passage whose source_id and
+    source_digest match it."""
+    if not (isinstance(c, dict) and all(isinstance(c.get(k), str) and c.get(k) for k in ("chunk_id", "source_id", "source_digest"))):
+        return False
+    ch = P["chunks"].get(c["chunk_id"])
+    return bool(ch) and ch["collection"] == "public" and c["source_id"] == P["doc_ids"].get(ch["doc"]) \
+        and c["source_digest"] == c["chunk_id"].split("|")[1]
+
+
+def grade(q, chk, body, P):
+    """One question's outcome under the rubric. chk is score.py's
+    check_answer result (contract violations, decline)."""
+    cits = body.get("citations") if isinstance(body, dict) and isinstance(body.get("citations"), list) else []
+    known = [isinstance(c, dict) and c.get("chunk_id") in P["chunks"] for c in cits]
+    parts = split_extracts(chk["answer"], [P["chunks"][c["chunk_id"]]["text"] for c in cits]) if cits and all(known) else None
+    extracts = []
+    for i, c in enumerate(cits):
+        doc = P["chunks"][c["chunk_id"]]["doc"] if known[i] else None
+        text, truncated = parts[i] if parts else (None, False)
+        extracts.append({"citation": i, "document": doc, "valid_citation": citation_ok(c, P),
+                         "bytes": len(text.encode()) if text is not None else None, "truncated": truncated,
+                         "text": text, "credits": []})
+    credited = {}
+    for fact in q["facts"]:
+        for doc, quote in evidence(fact):
+            for e in extracts:
+                if e["valid_citation"] and e["document"] == doc and e["text"] is not None and quote in e["text"]:
+                    credited.setdefault(fact["id"], e["citation"])
+                    if fact["id"] not in e["credits"]:
+                        e["credits"].append(fact["id"])
+    for e in extracts:
+        e["unrelated"] = not e["credits"]
+    missing = [f["id"] for f in q["facts"] if f["id"] not in credited]
+    if q["expect"] == "decline":
+        outcome = "correct_decline" if chk["declined"] else "wrong"
+    elif chk["declined"]:
+        outcome = "false_decline"
+    elif chk["violations"] or not credited:
+        outcome = "wrong"
+    else:
+        outcome = "complete" if not missing else "partial"
+    if parts is None and cits:
+        chk["violations"] = chk["violations"] + ["extracts cannot be associated with citations: no fact credited"]
+    return {"expect": q["expect"], "kind": q.get("kind", "diagnostic"), "outcome": outcome,
+            "required_facts": [f["id"] for f in q["facts"]], "credited_facts": credited, "missing_facts": missing,
+            "extracts": extracts, "answer_bytes": len(chk["answer"].encode()), "violations": chk["violations"]}
+
+
+def summarize(rows):
+    """Counts with denominators over a set of graded rows."""
+    ans = [r for r in rows.values() if r["expect"] == "answer"]
+    dec = [r for r in rows.values() if r["expect"] == "decline"]
+    count = lambda rs, o: sum(r["outcome"] == o for r in rs)
+    req = sum(len(r["required_facts"]) for r in ans)
+    missing_declined = sum(len(r["missing_facts"]) for r in ans if r["outcome"] == "false_decline")
+    missing = sum(len(r["missing_facts"]) for r in ans)
+    ex = [e for r in rows.values() for e in r["extracts"]]
+    return {
+        "questions": len(rows),
+        "answerable": {"n": len(ans), **{o: count(ans, o) for o in ("complete", "partial", "wrong", "false_decline")}},
+        "unsupported": {"n": len(dec), **{o: count(dec, o) for o in ("correct_decline", "wrong")}},
+        "facts": {"required": req, "credited": req - missing, "missing": missing,
+                  "missing_in_answers": missing - missing_declined, "missing_in_declines": missing_declined},
+        "extracts": {"returned": len(ex), "unrelated": sum(e["unrelated"] for e in ex),
+                     "unrelated_in_answerable": sum(e["unrelated"] for r in ans for e in r["extracts"]),
+                     "unrelated_in_unsupported": sum(e["unrelated"] for r in dec for e in r["extracts"])},
+        "contract_violations": sum(bool(r["violations"]) for r in rows.values()),
+    }
+
+
+def score_run(results_dir, inputs=EVAL_DIR):
+    inputs = Path(inputs)
+    fx = load_fixture(inputs)
+    s = BenchmarkScorer(inputs, fx)
+    s.load_inputs()
+    for e in check_fixture(fx, inputs):
+        s.err("fixture", e)
+    fixture_sha = sha256((inputs / FIXTURE).read_bytes())
+    P = s.load_pass(PROFILE, results_dir)
+    meta = P.get("meta") or {}
+    suite = meta.get("suite") if isinstance(meta.get("suite"), dict) else {}
+    if suite.get("name") != "answer-quality" or suite.get("fixture") != FIXTURE or suite.get("fixture_sha256") != fixture_sha:
+        s.err(PROFILE, f"run.json suite {suite!r} is not answer-quality with {FIXTURE} sha256 {fixture_sha}")
+    if not re.fullmatch(r"[0-9a-f]{40}", str(suite.get("fixture_commit"))):
+        s.err(PROFILE, f"run.json suite lacks the fixture commit (got {suite.get('fixture_commit')!r})")
+    fit = {}
+    if P.get("chunks"):
+        e, _, fit = resolve(fx, {cid: (c["doc"], c["text"]) for cid, c in P["chunks"].items()})
+        for x in e:
+            s.err(f"{PROFILE}/labels", x)
+    rows, diag = {}, {}
+    for q, is_diag in items(fx):
+        chk = s.check_answer(P, q["id"], "public", f"{PROFILE}/{q['id']}/answer")
+        if chk is None:
+            continue
+        (diag if is_diag else rows)[q["id"]] = grade(q, chk, P["responses"][f"{q['id']}__answer"]["body"], P)
+    report = {
+        "benchmark": {"name": fx["name"], "version": fx["version"], "fixture": FIXTURE, "fixture_sha256": fixture_sha,
+                      "fixture_commit": suite.get("fixture_commit"), "rubric": fx["rubric"]},
+        "profile": PROFILE, "results_dir": str(results_dir), "scorer_revision": base.git_rev(),
+        "run": {k: meta.get(k) for k in ("started_at", "finished_at", "requests", "inputs", "revisions", "provider", "db_binding")},
+        "label_fit": fit,
+        "errors_total": len(s.errors), "errors": s.errors[:base.MAX_LISTED],
+    }
+    if not s.errors:
+        report["headline"] = summarize(rows)
+        report["questions"] = rows
+        report["diagnostics"] = {"summary": summarize(diag), "rows": diag,
+                                 "known_issues": {d["id"]: d["known_issue"] for d in fx["diagnostics"]}}
+    report["status"], report["exit_code"] = ("invalid_evidence", 2) if s.errors else ("measured", 0)
+    return report
+
+
+def print_report(r, fx):
+    if r["errors"]:
+        print(f"INVALID EVIDENCE: {r['errors_total']} problem(s); nothing below is a measured result")
+        for e in r["errors"][:40]:
+            print(f"  - {e}")
+    else:
+        text = {q["id"]: q for q, _ in items(fx)}
+        for title, rows, summ in (("headline: 12 frozen questions", r["questions"], r["headline"]),
+                                  ("diagnostics (outside the headline)", r["diagnostics"]["rows"], r["diagnostics"]["summary"])):
+            print(f"=== {title} ({PROFILE}) ===")
+            for qid, row in rows.items():
+                docs = ", ".join(f"{e['document']}{' (truncated)' if e['truncated'] else ''}{'' if e['credits'] else ' [unrelated]'}"
+                                 for e in row["extracts"]) or "-"
+                print(f"  {qid:<6} {row['outcome']:<16} credited {len(row['credited_facts'])}/{len(row['required_facts'])}"
+                      f"{' missing ' + ','.join(row['missing_facts']) if row['missing_facts'] else ''}  extracts: {docs}"
+                      f"{'  VIOLATIONS: ' + '; '.join(row['violations']) if row['violations'] else ''}")
+            a, u, f, x = summ["answerable"], summ["unsupported"], summ["facts"], summ["extracts"]
+            print(f"  answerable n={a['n']}: complete={a['complete']} partial={a['partial']} wrong={a['wrong']} false_decline={a['false_decline']}")
+            print(f"  unsupported n={u['n']}: correct_decline={u['correct_decline']} wrong={u['wrong']}")
+            print(f"  required facts: credited {f['credited']}/{f['required']}, missing {f['missing']}/{f['required']} "
+                  f"({f['missing_in_answers']} in answers, {f['missing_in_declines']} in false declines)")
+            print(f"  extracts: unrelated {x['unrelated']}/{x['returned']} "
+                  f"({x['unrelated_in_answerable']} in answerable, {x['unrelated_in_unsupported']} in unsupported)")
+    print(f"status: {r['status']} (exit {r['exit_code']})")
+
+
 def main(argv=None):
+    argv = sys.argv[1:] if argv is None else argv
+    if argv[:1] == ["plan"]:
+        print_plan(*argv[1:4])
+        return 0
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     sub = ap.add_subparsers(dest="cmd", required=True)
     c = sub.add_parser("check", help="validate the frozen fixture's labels")
     c.add_argument("--inputs", default=str(EVAL_DIR))
     c.add_argument("--chunks", help="a run-eval.sh results directory (doc_ids.tsv + chunks.jsonl) of the pinned stack")
+    sc = sub.add_parser("score", help="grade an EVAL_SUITE=answer-quality results directory")
+    sc.add_argument("results_dir")
+    sc.add_argument("--inputs", default=str(EVAL_DIR))
+    sc.add_argument("--report", default=str(EVAL_DIR / "report-answer-quality.json"))
     args = ap.parse_args(argv)
+    if args.cmd == "score":
+        try:
+            r = score_run(args.results_dir, args.inputs)
+        except Exception:
+            import traceback
+            r = {"status": "scorer_error", "exit_code": 2, "errors": [], "errors_total": 0, "traceback": traceback.format_exc()[-4000:]}
+            print(r["traceback"], file=sys.stderr)
+        base.write_report(args.report, r)
+        if "traceback" not in r:
+            print_report(r, load_fixture(args.inputs))
+        return r["exit_code"]
     fx = load_fixture(args.inputs)
     errs = check_fixture(fx, args.inputs)
     if args.chunks:

@@ -124,6 +124,23 @@ jobs:
           { echo '```'; cat "$GITHUB_WORKSPACE/eval-out-summary.txt"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
           exit "$code"
         shell: bash
+      # The frozen answer-quality benchmark (eval/ANSWER-QUALITY.md) on its
+      # own fresh served-profile stack. A baseline: exit 0 = valid evidence
+      # whatever the quality; 2 = invalid evidence (fails the job).
+      - name: Answer-quality benchmark v1 (served profile real-norerank)
+        run: cd helix-labs/eval && EVAL_SUITE=answer-quality sh run-eval.sh real-norerank
+        env:
+          WF2_ARTIFACT_DIR: ${{ github.workspace }}/wf2-logs/answer-quality
+      - name: Score the answer-quality benchmark
+        run: |
+          cd helix-labs/eval
+          set +e
+          python3 answer_quality.py score results-answer-quality-real-norerank \
+            --report "$GITHUB_WORKSPACE/eval-out/report-answer-quality.json" | tee "$GITHUB_WORKSPACE/eval-out-answer-quality.txt"
+          code=${PIPESTATUS[0]}
+          { echo '```'; cat "$GITHUB_WORKSPACE/eval-out-answer-quality.txt"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          exit "$code"
+        shell: bash
       - uses: actions/upload-artifact@v4
         if: always()
         with:

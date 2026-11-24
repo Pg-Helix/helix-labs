@@ -321,3 +321,23 @@ The fixtures, thresholds, gates, cutoff, scoring rules and product behavior are 
   output that resolves to the reference path or, when both exist, is the same file
   (device and inode, so a hard link counts). The replay is written to a new temporary
   file and renamed over the output, so it never writes through an existing name.
+
+## Revision 2026-11-24 (2): strict readiness; answer-quality benchmark v1
+
+The retrieval evaluation is unchanged: fixtures, the 201-request plan per profile, the 13
+gates, the model, the reranker setting and the 0.707 cutoff.
+
+- **Readiness** is decided inside a strict JSON parser. The body must be UTF-8 with no
+  NaN or Infinity and no duplicate keys, and `status` must be exactly the expected string.
+  The shell comparison it replaces ran after a command substitution, which strips trailing
+  newlines, so `"ready\n"` was accepted.
+- **Answer-quality benchmark v1** (`ANSWER-QUALITY.md`, `answer-quality-v1.json`) is a
+  separate suite. It has 12 frozen questions on the public collection, plus D1, H3 and H7
+  as diagnostics outside the headline.
+  - The fixture, corpus hash and rubric were committed before any of its questions reached
+    `/answers`.
+  - `EVAL_SUITE=answer-quality sh run-eval.sh real-norerank` runs it on its own fresh
+    served-profile stack with the same transport and provenance record.
+  - `answer_quality.py score` grades it with `score.py`'s evidence checks, crediting a fact
+    only from the returned extract of a valid citation of its source document.
+  - It is a baseline with no target. Exit 2 means only that the evidence is invalid.

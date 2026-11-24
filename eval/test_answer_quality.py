@@ -3,13 +3,145 @@
 Run: python3 -m unittest -v eval/test_answer_quality.py"""
 import copy
 import hashlib
+import json
+import shutil
+import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
 EVAL = Path(__file__).resolve().parent
 sys.path.insert(0, str(EVAL))
 import answer_quality as aq  # noqa: E402
+import test_score  # noqa: E402  (synthetic results directories)
+
+FX = aq.load_fixture()
+ITEMS = {q["id"]: q for q, _ in aq.items(FX)}
+DECLINE = {"answer": "", "answer_method": "extractive", "citations": []}
+
+
+class Bench(test_score.Pass):
+    """A synthetic EVAL_SUITE=answer-quality results directory whose
+    default answers are ideal: each answerable item cites exactly the
+    documents of its required facts, each unsupported item declines."""
+
+    def __init__(self, root):
+        super().__init__(root, "real-norerank")
+        self.dir = Path(root) / "results-answer-quality-real-norerank"
+        self.responses = {f"{i}__answer": (200, self.answer(list(dict.fromkeys(f["document"] for f in q["facts"]))))
+                          for i, q in ITEMS.items()}
+        self.meta["suite"] = {"name": "answer-quality", "fixture": aq.FIXTURE, "fixture_commit": "f" * 40,
+                              "fixture_sha256": hashlib.sha256((EVAL / aq.FIXTURE).read_bytes()).hexdigest()}
+
+    def score(self):
+        self.write()
+        return aq.score_run(self.dir)
+
+
+class Scoring(unittest.TestCase):
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.b = Bench(self.tmp)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp)
+
+    def test_ideal_answers_are_complete_and_unsupported_questions_declined(self):
+        r = self.b.score()
+        self.assertEqual(r["exit_code"], 0, r["errors"])
+        h = r["headline"]
+        self.assertEqual(h["answerable"], {"n": 8, "complete": 8, "partial": 0, "wrong": 0, "false_decline": 0})
+        self.assertEqual(h["unsupported"], {"n": 4, "correct_decline": 4, "wrong": 0})
+        self.assertEqual(h["facts"], {"required": 15, "credited": 15, "missing": 0, "missing_in_answers": 0, "missing_in_declines": 0})
+        self.assertEqual((h["extracts"]["returned"], h["extracts"]["unrelated"]), (14, 0))
+        self.assertEqual(set(r["diagnostics"]["rows"]), {"D1", "H3", "H7"})  # outside the headline
+        self.assertEqual(h["questions"], 12)
+
+    def test_a_cited_fact_cut_off_by_truncation_is_not_credited(self):
+        b = self.b
+        docs = ["code-of-conduct.md", "security-badge-policy.md", "it-equipment-policy.md"]
+        full = b.answer(docs)
+        cut = full["answer"][:full["answer"].index("reported to IT") + len("reported to")]  # the last extract, cut mid-quote
+        b.responses["AQ-M1__answer"] = (200, dict(full, answer=cut))
+        row = b.score()["questions"]["AQ-M1"]
+        self.assertEqual(row["violations"], [])  # a valid truncated extractive answer
+        self.assertEqual((row["outcome"], row["missing_facts"]), ("partial", ["lost-equipment"]))
+        last = row["extracts"][-1]
+        self.assertEqual((last["document"], last["truncated"], last["credits"], last["unrelated"]),
+                         ("it-equipment-policy.md", True, [], True))  # its fact was cut, so it supports nothing
+
+    def test_a_quote_paired_with_the_wrong_source_is_not_credited(self):
+        b = self.b
+        # (a) the extract is the right passage, but its citation names another document
+        ans = b.answer(["wellness-benefit.md"])
+        ans["citations"][0]["source_id"] = b.doc["parking-policy.md"]
+        b.responses["AQ-S4__answer"] = (200, ans)
+        # (b) both passages returned, citations listed in the other order than the text
+        ans = b.answer(["travel-booking-policy.md", "expense-reimbursement.md"])
+        ans["citations"].reverse()
+        b.responses["AQ-M2__answer"] = (200, ans)
+        r = b.score()
+        s4, m2 = r["questions"]["AQ-S4"], r["questions"]["AQ-M2"]
+        self.assertEqual((s4["outcome"], s4["credited_facts"], s4["extracts"][0]["valid_citation"]), ("wrong", {}, False))
+        self.assertIn("citation 0 source_id does not match its passage's document", s4["violations"])
+        self.assertEqual((m2["outcome"], m2["credited_facts"]), ("wrong", {}))
+        self.assertIn("answer text is not the cited passages' own text", m2["violations"])
+        self.assertEqual(r["headline"]["facts"]["missing"], 3)
+
+    def test_a_partial_answer_with_an_unrelated_passage(self):
+        b = self.b
+        b.responses["AQ-M2__answer"] = (200, b.answer(["travel-booking-policy.md", "parking-policy.md"]))
+        r = b.score()
+        row = r["questions"]["AQ-M2"]
+        self.assertEqual((row["outcome"], list(row["credited_facts"]), row["missing_facts"]), ("partial", ["business-class"], ["receipts"]))
+        self.assertEqual([(e["document"], e["unrelated"]) for e in row["extracts"]],
+                         [("travel-booking-policy.md", False), ("parking-policy.md", True)])
+        h = r["headline"]
+        self.assertEqual((h["facts"]["missing"], h["facts"]["missing_in_answers"]), (1, 1))
+        self.assertEqual((h["extracts"]["unrelated"], h["extracts"]["unrelated_in_answerable"], h["extracts"]["returned"]), (1, 1, 14))
+        self.assertEqual(h["answerable"]["partial"], 1)
+
+    def test_declines_and_answered_unsupported_questions(self):
+        b = self.b
+        b.responses["AQ-M3__answer"] = (200, DECLINE)
+        b.responses["AQ-U3__answer"] = (200, b.answer(["remote-work-policy.md"]))
+        r = b.score()
+        self.assertEqual(r["questions"]["AQ-M3"]["outcome"], "false_decline")
+        self.assertEqual((r["questions"]["AQ-U3"]["outcome"], r["questions"]["AQ-U3"]["extracts"][0]["unrelated"]), ("wrong", True))
+        h = r["headline"]
+        self.assertEqual((h["facts"]["missing_in_declines"], h["extracts"]["unrelated_in_unsupported"]), (2, 1))
+        self.assertEqual(h["unsupported"], {"n": 4, "correct_decline": 3, "wrong": 1})
+
+    def test_invalid_evidence_exits_2(self):
+        for name, mutate, want in (
+                ("transport", lambda b: b.curl.update({"AQ-S1__answer": 18}), "transport failure: curl exit 18"),
+                ("fixture", lambda b: b.meta["suite"].update(fixture_sha256="0" * 64), "is not answer-quality"),
+                ("incomplete", lambda b: b.meta.update(completed=False), "did not complete"),
+                ("plan", lambda b: b.responses.pop("H7__answer"), "unexecuted request"),
+                ("profile", lambda b: b.meta["provider"].update(reranker="enabled"), "reranker"),
+                ("labels", lambda b: b.text.update({"it-equipment-policy.md": "Laptops are replaced every three years."}),
+                 "quote resolves to 0 passages of it-equipment-policy.md")):
+            with self.subTest(name):
+                b = Bench(self.tmp / name)
+                mutate(b)
+                r = b.score()
+                self.assertEqual(r["exit_code"], 2)
+                self.assertTrue(any(want in e for e in r["errors"]), r["errors"])
+                self.assertNotIn("headline", r)
+
+    def test_the_cli_writes_a_report_and_the_plan_matches_the_scorer(self):
+        self.b.write()
+        rep = self.tmp / "report.json"
+        p = subprocess.run([sys.executable, str(EVAL / "answer_quality.py"), "score", str(self.b.dir), "--report", str(rep)],
+                           capture_output=True, text=True)
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        self.assertIn("required facts: credited 15/15", p.stdout)
+        self.assertEqual(json.loads(rep.read_text())["status"], "measured")
+        plan = subprocess.run([sys.executable, str(EVAL / "answer_quality.py"), "plan", "P", "R", "E"], capture_output=True, text=True)
+        names = [l.split("\t")[0] for l in plan.stdout.splitlines()]
+        self.assertEqual(names, [f"{i}__answer" for i in ITEMS])
+        self.assertEqual(len(names), 15)
 
 
 class FrozenFixture(unittest.TestCase):
